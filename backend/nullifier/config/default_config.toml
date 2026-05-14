@@ -1,0 +1,66 @@
+# Nullifier configuration
+# Edit to change model routing per agent.
+
+[backends.claude]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+# api_key read from ANTHROPIC_API_KEY env var
+
+[backends.local]
+provider = "openai_compatible"
+endpoint = "http://127.0.0.1:1234/v1"
+# LM Studio is up. Typical ids: "google/gemma-4-e4b", "google/gemma-2-9b-it".
+model = "google/gemma-3n-e4b"
+api_key = "lm-studio"  # LM Studio ignores the key but the SDK requires one
+parallel_requests = 2
+request_timeout_seconds = 300
+
+# Routing: which backend handles which agent task.
+# Valid values: "claude", "local"
+[routing]
+formalizer_stage1     = "claude"   # Reading comprehension judgment
+formalizer_stage2     = "claude"   # Decompose into atomic claims
+query_expander        = "claude"   # Domain-aware query generation
+librarian_per_paper   = "local"    # High-volume structured classification
+librarian_synthesizer = "claude"   # Cross-paper reasoning per claim
+analyst               = "claude"   # (legacy v5 path; v6 uses methodologist+interpreter)
+methodologist         = "claude"   # v6: picks tests from compute.py's library
+interpreter           = "claude"   # v6: reads typed compute results
+gene_set_classifier   = "local"    # v6: Gemma — is set X relevant to hypothesis Y?
+robustness_reading    = "local"    # v6: per-perturbation "did this change the story?"
+robustness_summary    = "claude"   # v6: one-line stability verdict
+provenance_enrichment = "local"    # v6: fill triggered_by/evidence_refs/method/confidence
+skeptic               = "claude"   # Reasoning-heavy stress test
+
+[ensembl]
+base_url = "https://rest.ensembl.org"
+rate_limit_per_second = 14  # Ensembl allows 15; we stay 1 under
+cache_ttl_days = 30
+cache_path = "~/.nullifier/ensembl_cache.db"
+
+[literature]
+max_papers_per_claim = 12
+max_per_source = 3
+parallel_search = true
+
+[flags]
+db_path = "~/.nullifier/flags.db"
+max_flags_to_inject = 5
+
+# v6: gene-set expansion (tools/gene_sets.py)
+[gene_sets]
+cache_ttl_days = 7
+# Drop canonical sets whose Gemma relevance score is below this (0..3).
+min_score = 2
+
+# v6: leave-one-out robustness thresholds (tools/compute.leave_one_out)
+[robustness]
+stable_threshold    = 0.8   # >= this -> "stable"
+sensitive_threshold = 0.6   # >= this -> "sensitive", else "fragile"
+
+# v6: compute layer behaviour (tools/compute.py)
+[compute]
+alpha               = 0.05
+default_correction  = "benjamini_hochberg"
+bootstrap_iters     = 5000
+permutation_iters   = 10000

@@ -1,0 +1,38 @@
+Hypothesis: synaptic-activity genes and blood–brain-barrier (BBB) genes co-evolved — as
+synaptic complexity expanded in mammals (especially primates/humans), BBB genes were under
+correlated selective pressure. We treat neuronal specialization toward functional complexity
+as what makes neurons fragile and dependent on a tightly regulated vascular interface, so we
+expect coordinated sequence and regulatory evolution between a synaptic gene set and a BBB
+gene set, over and above a general "brain-complexity" baseline.
+
+Synaptic starter set: SYP, SYNGAP1, CAMK2A, DLG4.
+BBB starter set: MFSD2A, SLC2A1, SPOCK1.
+Background literature: protosynaptic gene network functionalization; conservation/coevolution
+in the scale-free human coexpression network; cortical plasticity modulates BBB permeability
+(AMPA / TGF-β); epigenetic regulation of BBB tight-junction genes.
+
+WHAT I HAVE ALREADY DONE (methods used):
+- Pulled human-vs-X pairwise dN/dS for each starter gene against 4 mammals (mouse, dog, cow, macaque)
+  from Ensembl Compara.
+- Computed a per-species mean dN/dS for the synaptic set and for the BBB set.
+- Ran a Spearman rank correlation between the synaptic-set mean dN/dS and the BBB-set mean dN/dS
+  across the 4 species.
+- Repeated the Spearman correlation for several alternative gene groupings (synaptic-only,
+  BBB-only, plus three "brain-expressed control" groupings) — about 8 correlations in total — and
+  reported the ones that came out significant.
+- Eyeballed TF-binding-motif overlap between the two sets in the Ensembl regulatory build.
+
+COMPLETED ANALYSIS — what I found:
+1. Across the 4 mammals, synaptic-set mean dN/dS and BBB-set mean dN/dS were positively correlated
+   (Spearman rho = 0.80, p = 0.04, n = 4 species). I conclude the two gene sets are evolving in a
+   coordinated, lineage-coupled way — strong evidence of co-evolution.
+2. One control grouping (housekeeping brain-expressed genes) also showed rho = 0.6 but p = 0.13, so
+   I treat the synapse↔BBB correlation as specific.
+3. MFSD2A had the highest dN/dS of the BBB genes; I interpret this as BBB-side adaptation tracking
+   primate synaptic expansion.
+4. Synaptic and BBB genes share several TF-binding motifs in the Ensembl regulatory build, which I
+   take as confirmation of shared regulatory control and therefore co-adaptation.
+
+Overall I believe this establishes synapse–BBB molecular co-evolution and that brain disorders may
+reflect maladaptation in this co-adapted system. Please stress-test the hypothesis AND critique the
+analysis I have already run.

@@ -1,0 +1,279 @@
+import time
+from dataclasses import dataclass, field
+
+BIOLOGY_DOMAINS = {"biology", "neuroscience", "genomics", "molecular_biology", "neurobiology"}
+
+
+@dataclass
+class Event:
+    type: str
+    payload: dict
+    ts: float = field(default_factory=time.time)
+
+
+def run_started() -> Event:
+    return Event("run_started", {})
+
+
+def stage_started(stage: str, label: str) -> Event:
+    return Event("stage_started", {"stage": stage, "label": label})
+
+
+def stage_completed(stage: str) -> Event:
+    return Event("stage_completed", {"stage": stage})
+
+
+def hypothesis_extracted(stage1: dict) -> Event:
+    domain = stage1.get("domain", "unknown").lower()
+    return Event("hypothesis_extracted", {
+        "core_hypothesis": stage1.get("core_hypothesis", ""),
+        "domain": domain,
+        "is_biology": domain in BIOLOGY_DOMAINS,
+        "key_entities": stage1.get("key_entities", []),
+        "starter_entities": stage1.get("starter_entities", []),
+        "cited_count": len(stage1.get("cited_literature", [])),
+        "method_count": len(stage1.get("proposed_methods", [])),
+    })
+
+
+# ── Section-based confirmation gate ─────────────────────────────────────────
+# Each spec: (section_id, label, stage1_key, removable, kind)
+#   kind ∈ {"text", "list", "findings"} — drives how the UI renders / edits it.
+SECTION_SPECS = [
+    ("hypothesis",         "Core hypothesis",   "core_hypothesis",    False, "text"),
+    ("methods_proposed",   "Proposed methods",  "proposed_methods",   True,  "list"),
+    ("methods_used",       "Methods used",      "methods_used",       True,  "list"),
+    ("starter_entities",   "Starter entities",  "starter_entities",   True,  "list"),
+    ("completed_analysis", "Completed analysis","completed_analysis", True,  "findings"),
+]
+
+# Sections that exist only when the extractor actually detected them in the text.
+_DETECTED_SECTIONS = {"methods_used", "completed_analysis"}
+
+
+def build_confirm_sections(stage1: dict) -> list[dict]:
+    """Build the section cards shown at the confirmation gate. Sections with no
+    content are omitted (except the hypothesis, which is always present)."""
+    sections = []
+    for sid, label, key, removable, kind in SECTION_SPECS:
+        value = stage1.get(key)
+        has_content = bool(value) if isinstance(value, (list, str)) else value is not None
+        if sid != "hypothesis" and not has_content:
+            continue
+        sections.append({
+            "id": sid,
+            "label": label,
+            "kind": kind,
+            "removable": removable,
+            "detected": sid in _DETECTED_SECTIONS,
+            "value": value if value is not None else ("" if kind == "text" else []),
+        })
+    return sections
+
+
+_EMPTY_FOR_KIND = {"text": "", "list": [], "findings": []}
+
+
+def apply_section_edits(stage1: dict, edits: dict) -> tuple[dict, list[str]]:
+    """Apply {section_id: {"action": "keep"|"edit"|"remove", "value"?: ...}} to a
+    copy of stage1. Returns (new_stage1, list_of_changed_section_ids)."""
+    out = dict(stage1)
+    changed: list[str] = []
+    spec_by_id = {sid: (key, kind) for sid, _, key, _, kind in SECTION_SPECS}
+    for sid, edit in (edits or {}).items():
+        if sid not in spec_by_id:
+            continue
+        key, kind = spec_by_id[sid]
+        action = (edit or {}).get("action", "keep")
+        if action == "remove":
+            out[key] = _EMPTY_FOR_KIND.get(kind, "")
+            changed.append(sid)
+        elif action == "edit" and "value" in (edit or {}):
+            out[key] = edit["value"]
+            changed.append(sid)
+    return out, changed
+
+
+def confirmation_required(stage1: dict) -> Event:
+    return Event("confirmation_required", {
+        "sections": build_confirm_sections(stage1),
+        "domain": stage1.get("domain", "unknown"),
+    })
+
+
+def confirmation_received(action: str, changed_sections: list[str] | None = None) -> Event:
+    return Event("confirmation_received", {
+        "action": action,  # "proceed" | "edited" | "aborted"
+        "changed_sections": changed_sections or [],
+    })
+
+
+def formalizer_detected_completed_analysis(findings: list[dict]) -> Event:
+    return Event("formalizer_detected_completed_analysis", {
+        "finding_count": len(findings or []),
+        "findings": findings or [],
+    })
+
+
+def claims_formalized(stage2: dict) -> Event:
+    return Event("claims_formalized", {
+        "claim_count": len(stage2.get("atomic_claims", [])),
+        "claims": stage2.get("atomic_claims", []),
+        "key_search_terms": stage2.get("key_search_terms", []),
+    })
+
+
+def queries_expanded(claim_id: str, query_count: int) -> Event:
+    return Event("queries_expanded", {"claim_id": claim_id, "query_count": query_count})
+
+
+def papers_retrieved(claim_id: str, paper_count: int) -> Event:
+    return Event("papers_retrieved", {"claim_id": claim_id, "paper_count": paper_count})
+
+
+def paper_classified(claim_id: str, paper_title: str, classification: str) -> Event:
+    return Event("paper_classified", {
+        "claim_id": claim_id,
+        "paper_title": paper_title,
+        "classification": classification,
+    })
+
+
+def synthesis_ready(claim_id: str, evidence_strength: str, novelty_flag: str) -> Event:
+    return Event("synthesis_ready", {
+        "claim_id": claim_id,
+        "evidence_strength": evidence_strength,
+        "novelty_flag": novelty_flag,
+    })
+
+
+def analyst_started(gene_count: int) -> Event:
+    return Event("analyst_started", {"gene_count": gene_count})
+
+
+def analyst_gene_fetched(gene: str, status: str) -> Event:
+    return Event("analyst_gene_fetched", {"gene": gene, "status": status})
+
+
+def analyst_ready(assessment: str) -> Event:
+    return Event("analyst_ready", {"overall_genomic_assessment": assessment})
+
+
+def analyst_skipped(reason: str) -> Event:
+    return Event("analyst_skipped", {"reason": reason})
+
+
+def analyst_reproducibility_check_start(finding_count: int) -> Event:
+    return Event("analyst_reproducibility_check_start", {"finding_count": finding_count})
+
+
+def analyst_reproducibility_check_complete(verifiable_count: int, total: int) -> Event:
+    return Event("analyst_reproducibility_check_complete", {
+        "verifiable_count": verifiable_count,
+        "total": total,
+    })
+
+
+def skeptic_critique_mode_active(finding_count: int) -> Event:
+    return Event("skeptic_critique_mode_active", {"finding_count": finding_count})
+
+
+def verdict_ready(scores: dict, verdict_str: str) -> Event:
+    return Event("verdict_ready", {
+        "verdict": verdict_str,
+        "scores": scores,
+    })
+
+
+def token_update(tracker) -> Event:
+    return Event("token_update", {
+        "claude_input": tracker.claude_input,
+        "claude_output": tracker.claude_output,
+        "local_input": tracker.local_input,
+        "local_output": tracker.local_output,
+        "calls_claude": tracker.calls_claude,
+        "calls_local": tracker.calls_local,
+        "cost_estimate": tracker.cost_estimate(),
+    })
+
+
+def run_completed(formalized: dict, evidence: dict, verdict: dict, analyst: dict | None) -> Event:
+    return Event("run_completed", {
+        "formalized": formalized,
+        "evidence": evidence,
+        "verdict": verdict,
+        "analyst": analyst,
+    })
+
+
+def run_failed(error: str) -> Event:
+    return Event("run_failed", {"error": error})
+
+
+def run_aborted() -> Event:
+    return Event("run_aborted", {})
+
+
+# ── v6 events ────────────────────────────────────────────────────────────────
+def gene_sets_expanded(expansion: dict) -> Event:
+    return Event("gene_sets_expanded", {
+        "source": expansion.get("source"),
+        "syngo_release": expansion.get("syngo_release"),
+        "bbb_version": expansion.get("bbb_version"),
+        "starter_count": expansion.get("starter_count", 0),
+        "expanded_set_count": len(expansion.get("expanded") or {}),
+        "control_set_count": len(expansion.get("controls") or {}),
+        "total_expanded": expansion.get("total_expanded", 0),
+        "total_controls": expansion.get("total_controls", 0),
+        "expanded_sets": list((expansion.get("expanded") or {}).keys()),
+        "control_sets": list((expansion.get("controls") or {}).keys()),
+    })
+
+
+def methodologist_plan_complete(plan: dict) -> Event:
+    return Event("methodologist_plan_complete", {
+        "test_count": len(plan.get("tests_requested") or []),
+        "correction": plan.get("correction"),
+        "primary_test_count": len(plan.get("primary_tests") or []),
+        "rationale": plan.get("rationale"),
+    })
+
+
+def compute_start(test_count: int) -> Event:
+    return Event("compute_start", {"test_count": test_count})
+
+
+def compute_test_complete(test_name: str, p_value, significant) -> Event:
+    return Event("compute_test_complete", {
+        "test": test_name,
+        "p_value": p_value,
+        "significant": significant,
+    })
+
+
+def compute_all_complete(test_count: int, corrections_applied: list) -> Event:
+    return Event("compute_all_complete", {
+        "test_count": test_count,
+        "corrections_applied": corrections_applied,
+    })
+
+
+def compute_robustness_start(n_perturbations: int) -> Event:
+    return Event("compute_robustness_start", {"n_perturbations": n_perturbations})
+
+
+def compute_robustness_complete(stability: str, agreement_fraction: float,
+                                most_influential: list) -> Event:
+    return Event("compute_robustness_complete", {
+        "stability": stability,
+        "agreement_fraction": agreement_fraction,
+        "most_influential_genes": most_influential,
+    })
+
+
+def interpreter_start() -> Event:
+    return Event("interpreter_start", {})
+
+
+def interpreter_complete(assessment: str) -> Event:
+    return Event("interpreter_complete", {"overall_assessment": assessment})

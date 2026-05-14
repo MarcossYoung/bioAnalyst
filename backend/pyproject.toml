@@ -1,0 +1,22 @@
+[project]
+name = "nullifier"
+version = "0.4.0"
+description = "Scientific hypothesis stress-tester (multi-agent, hybrid Claude+local LLM, Ensembl-backed genomic Analyst)"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.25.0",
+    "openai>=1.40.0",
+    "requests>=2.31.0",
+    "rich>=13.7.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-dotenv>=1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nullifier*"]

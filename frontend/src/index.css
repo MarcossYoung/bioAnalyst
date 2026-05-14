@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+:root {
+  --oxford: #1e3a5f;
+  --oxford-hover: #264d7a;
+  --bg: #f8f9fa;
+  --surface: #ffffff;
+  --border: #d1d5db;
+  --border-light: #e5e7eb;
+  --text-heading: #0f172a;
+  --text-body: #374151;
+  --text-muted: #6b7280;
+  --text-xs: #9ca3af;
+
+  --verdict-strong: #166534;
+  --verdict-strong-bg: #f0fdf4;
+  --verdict-strong-border: #bbf7d0;
+  --verdict-moderate: #92400e;
+  --verdict-moderate-bg: #fffbeb;
+  --verdict-moderate-border: #fde68a;
+  --verdict-weak: #9a3412;
+  --verdict-weak-bg: #fff7ed;
+  --verdict-weak-border: #fed7aa;
+  --verdict-falsified: #7f1d1d;
+  --verdict-falsified-bg: #fef2f2;
+  --verdict-falsified-border: #fecaca;
+  --verdict-novel: #155e75;
+  --verdict-novel-bg: #ecfeff;
+  --verdict-novel-border: #a5f3fc;
+  --verdict-problematic: #86198f;
+  --verdict-problematic-bg: #fdf4ff;
+  --verdict-problematic-border: #f5d0fe;
+
+  --severity-high: #7f1d1d;
+  --severity-high-bg: #fef2f2;
+  --severity-high-border: #fecaca;
+  --severity-medium: #92400e;
+  --severity-medium-bg: #fffbeb;
+  --severity-medium-border: #fde68a;
+  --severity-low: #166534;
+  --severity-low-bg: #f0fdf4;
+  --severity-low-border: #bbf7d0;
+
+  --compute-bg: #f0f4ff;
+  --compute-badge: #1e40af;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-body);
+  font-family: system-ui, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Academic serif for evidence/hypothesis text */
+.prose {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-body);
+}
+
+/* Compact monospace for event log */
+.log-mono {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}

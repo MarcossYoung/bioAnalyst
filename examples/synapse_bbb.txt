@@ -1,0 +1,131 @@
+We have data showing that the huma serum is toxic to neurons but not to other cells types such as
+myocytes and hepatocytes. Thus, we hypothesize that the blood–brain barrier co-developed along the
+complexification on neurons (we assume that neuronal specialization toward functional complexity is
+what makes them fragile and vulnerable to blood components). We would therefore like to test the
+idea of co-evolution (or co-adaptation) between neuronal activity genes (such as synaptic genes) and
+genes involved in the formation of the BBB. There is some literature on links between synaptic function
+and the brain-vascular/BBB, but I could not find direct studies of synaptic gene ↔ BBB gene co-
+evolution.
+We identified studies of The evolution of synaptic gene networks:
+e.g., one study “Functionalization of a Protosynaptic Gene Expression Network – In the Light of
+Evolution” documents how “protosynaptic” genes in early animals (even those without true synapses)
+were co-opted and then regulated in networks as synapses evolved.
+ Evolutionary constraint/co-expression of genes: For example, “Conservation and Coevolution in
+the Scale-Free Human Gene Coexpression Network” finds that genes with many co-expressed
+partners (hubs) evolve more slowly, and co‐expressed genes show similar rates of evolution.
+ A direct synapse ⇄ BBB functional link: A recent study found that synaptic potentiation (in
+cortex) leads to localized changes in BBB permeability, mediated via AMPA receptor signaling
+and TGF-β, etc. (“Cortical plasticity is associated with blood–brain barrier modulation”.)
+ BBB gene regulation / epigenetics: There is a review on epigenetic regulation of the BBB (tight
+junction proteins, endothelial‐cell genes) showing how developmental and environment
+influences shape BBB gene expression.
+These pieces show: (a) synaptic gene systems are under evolutionary constraint and specialization;
+(b) BBB genes are regulated and important for neurovascular/brain homeostasis; (c) there is
+cross‐talk between neuronal/synaptic activity and BBB function. the paper showing that synaptic
+activity modulates BBB permeability provides a mechanistic basis for why synaptic genes and BBB
+genes might be under joint selective pressures. Hypothesis: as synaptic complexity expanded (e.g.,
+in primates/humans), the vascular/BBB system had to adapt (greater nutrient delivery, tighter
+protection, more active signalling) — this could drive coordinated evolution.
+
+But I found no clear study explicitly mapping co-evolutionary signatures (e.g., correlated rates of
+sequence evolution, co-duplication, or compensatory changes) between a set of synaptic genes and a
+set of BBB genes across species. (The term “co-evolution” is used often in inter‐species interactions
+(host-parasite, predator-prey) or inter‐protein complexes (e.g., mitochondrial/nuclear genes) but much
+less so for two functionally linked gene sets within the same species (synaptic vs BBB)).
+
+I found no clear study explicitly testing how selective pressures on synapse complexity/efficiency might
+drive adaptations in BBB genes (to support more metabolic throughput, greater protection, etc.), or
+conversely how vascular/BBB changes might permit synaptic expansions.
+
+I want you do a rigorous investigation (bioinformatics) using available genomic databases, as well as
+transcriptomics and variant databases:
+I want you to start by:
+1. Define a synapse‐related gene set
+2. Define BBB gene set
+3. Define a gene set of genes expressed in the brain but not involved in neuronal specialization
+or BBB function.
+4. Do a comparative evolutionary analysis
+ Compute rates of sequence evolution for genes in both sets across mammals (or vertebrates).
+ Ask: are there correlated rates? Are BBB genes evolving faster/slower in lineages with more
+complex synaptic systems?
+5. Use co‐expression or network topology: are synaptic and BBB genes co‐expressed in certain
+brain/vascular cell types? If yes, that supports co‐regulation (a hint of co‐adaptation). Are TF
+bindings sites common to synaptic and BBB genes? Investigate regulatory/co‐expression
+networks: co‐evolution may operate via regulatory elements rather than just coding sequence.
+6. Do a careful Interpretation If we find correlated evolution, which could be confounders: e.g.,
+both gene sets might be under general brain‐complexity related selection, not specific mutual
+adaptation. So, use as controls brain gene sets not involved in synapse or BBB to compare
+baseline rates.
+7. Provide implications: brain disorders may reflect maladaptation in the synapse-BBB co‐adapted
+system.
+
+-For synaptic genes: use resources such as SynGO (synaptic gene ontology) and SynaptomeDB.
+-For BBB genes: use transcriptome studies of the BBB (e.g., rat BBB transcriptome) and known
+endothelial/transport gene sets.
+a. Filter to mammals (or vertebrates if necessary)
+o Map human gene to orthologs in mammals.
+
+b. Compute comparative metrics / coevolution potential
+o Example metrics: correlated dN/dS across lineages, gene family expansion, regulatory
+network coexpression across celltypes (synapse vs BBB endothelial cells).
+
+c. Build a table : It could be: Gene symbol, gene set (Synapse or BBB), description, mammalian
+orthologs, any duplication/expansion note, potential colink with the other gene set (initial
+hypothesis).
+Here are some genes already identified, with basic annotations, as part of each set:
+Synaptic gene set (incomplete)
+Gene
+symbol Description Comments
+SYP Synaptophysin (synaptic vesicle glycoprotein) Classic synaptic vesicle protein.
+SYNGAP1 Synaptic Ras GTPase activating protein 1 Postsynaptic signalling /
+
+plasticity.
+
+SYNGR1 Synaptogyrin 1 (vesicle membrane protein) Presynaptic vesicle associated.
+CAMK2A Calcium/calmodulindependent protein kinase II alpha Key postsynaptic plasticity
+
+kinase.
+
+DLG4 Discs large homolog 4 (PSD95) Postsynaptic scaffolding hub.
+BBB gene set (incomplete)
+Gene symbol Description Comments
+
+MFSD2A
+
+Major facilitator superfamily domain
+containing 2A; endothelial transporter at
+BBB
+
+Direct BBB‐specific function.
+
+SLC2A1 Glucose transporter 1 (GLUT1); expressed
+
+heavily in brain endothelial cells Classic BBB transport gene.
+
+SPOCK1 (Gene identified in zebrafish/mouse BBB
+
+permeability screen) Indirect BBB regulator.
+
+(From rat BBB
+transcriptome)
+
+Many genes (~864) identified in rat BBB
+endothelial cells
+
+Would require mapping to
+human orthologs if used.
+
+(Tightjunction / endothelial
+structural genes)
+
+e.g., claudins, occludin (not yet listed with
+citation) Will fill in soon.
+
+ Expand the lists, annotate any known duplication events or lineage‐specific expansions for
+mammalian lineages, where available (e.g., synaptic genes often show expansions in primates;
+BBB genes might show adaptations in certain mammals).
+ Then propose an initial matrix of candidate “co‐evolution pairs” — e.g., Synaptic gene A ↔
+BBB gene B — where the hypothesis would be that they show correlated evolutionary
+signatures or functional linkage.
+ Provide recommendations on how you might compute dN/dS correlations or network
+coexpression (tools, databases) for full-scale analysis.

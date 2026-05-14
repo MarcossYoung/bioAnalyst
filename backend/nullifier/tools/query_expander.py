@@ -1,0 +1,34 @@
+from .llm_client import llm_call_json
+
+QUERY_EXPANDER_SYSTEM = """You are a scientific literature search expert. Given an atomic
+claim and context, generate 5-8 diverse query variants for literature databases.
+
+Cover these angles:
+- Direct terms from the claim
+- Synonyms and alternative phrasings
+- Mechanistic terms (if a mechanism is proposed)
+- Negative/contradictory framings (to find papers that REFUTE the claim)
+- Specific entity names from starter data (if provided)
+- Adjacent concepts (for confounders)
+
+Respond with ONLY valid JSON:
+{
+  "queries": [
+    {"query": "...", "intent": "direct|synonym|mechanism|contradiction|entity-specific|adjacent"},
+    ...
+  ]
+}"""
+
+
+def expand_queries(claim: dict, starter_entities: list[str] = None) -> list[dict]:
+    starter_entities = starter_entities or []
+    user = f"""Claim: {claim['statement']}
+Null hypothesis: {claim['null_hypothesis']}
+Entity A: {claim['entity_a']}
+Entity B: {claim['entity_b']}
+Context: {claim.get('context', '')}
+Mechanism: {claim.get('mechanism', '')}
+Starter entities to anchor queries: {', '.join(starter_entities[:20])}
+"""
+    result = llm_call_json("query_expander", QUERY_EXPANDER_SYSTEM, user, max_tokens=1000)
+    return result.get("queries", [])
