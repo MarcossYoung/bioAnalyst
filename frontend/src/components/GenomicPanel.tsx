@@ -69,14 +69,18 @@ export function GenomicPanel({ analyst }: GenomicPanelProps) {
   const jaccard = analyst.cross_set?.jaccard_index ?? interp?.regulatory_overlap?.jaccard_index ?? null
   const sharedTfs = analyst.cross_set?.shared_tfs ?? interp?.regulatory_overlap?.shared_tf_motifs ?? []
 
-  const patternData = (interp?.patterns_observed ?? []).map((p, i) => ({
-    key: i,
-    name: p.pattern.length > 64 ? p.pattern.slice(0, 64) + '…' : p.pattern,
-    fullName: p.pattern,
-    annotation: p.supports_hypothesis,
-    evidence: p.evidence,
-    value: patternValue(p.supports_hypothesis),
-  }))
+  const patternData = (interp?.patterns_observed ?? [])
+    .filter((p): p is NonNullable<typeof p> & { pattern: string } =>
+      !!p && typeof p.pattern === 'string' && p.pattern.length > 0,
+    )
+    .map((p, i) => ({
+      key: i,
+      name: p.pattern.length > 64 ? p.pattern.slice(0, 64) + '…' : p.pattern,
+      fullName: p.pattern,
+      annotation: p.supports_hypothesis ?? 'neutral',
+      evidence: p.evidence ?? '',
+      value: patternValue(p.supports_hypothesis ?? 'neutral'),
+    }))
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -135,22 +139,22 @@ export function GenomicPanel({ analyst }: GenomicPanelProps) {
       )}
 
       {/* Gene sets + stats */}
-      {(analyst.set_a.length > 0 || analyst.set_b.length > 0) && (
+      {((analyst.set_a?.length ?? 0) > 0 || (analyst.set_b?.length ?? 0) > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-          {analyst.set_a.length > 0 && (
+          {(analyst.set_a?.length ?? 0) > 0 && (
             <div>
               <SectionLabel>Set A — synaptic genes</SectionLabel>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
-                {analyst.set_a.map((g) => <Chip key={g}>{g}</Chip>)}
+                {(analyst.set_a ?? []).map((g) => <Chip key={g}>{g}</Chip>)}
               </div>
               {analyst.set_a_stats && <SetStats stats={analyst.set_a_stats} />}
             </div>
           )}
-          {analyst.set_b.length > 0 && (
+          {(analyst.set_b?.length ?? 0) > 0 && (
             <div>
               <SectionLabel>Set B — BBB genes</SectionLabel>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
-                {analyst.set_b.map((g) => <Chip key={g} scheme="cyan">{g}</Chip>)}
+                {(analyst.set_b ?? []).map((g) => <Chip key={g} scheme="cyan">{g}</Chip>)}
               </div>
               {analyst.set_b_stats && <SetStats stats={analyst.set_b_stats} />}
             </div>
