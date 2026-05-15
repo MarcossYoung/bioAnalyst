@@ -154,15 +154,17 @@ def _build_confirm_callback(console):
             tag = " [yellow](detected)[/yellow]" if s["detected"] else ""
             console.print(f"\n[bold cyan]{s['label']}[/bold cyan]{tag}")
             console.print(_render_value(s["kind"], s["value"]))
+            options = ["keep", "edit"]
+            if s["removable"]:
+                options.append("remove")
             while True:
-                choice = input(
-                    f"  {s['label']} (type keep"
-                    + (" / edit / remove" if s["removable"] else " / edit")
-                    + "): "
-                ).strip().lower()
-                if choice in ("", "keep"):
+                console.print("  Actions:")
+                for i, opt in enumerate(options, 1):
+                    console.print(f"    {i}. {opt}")
+                choice = input("  Choose 1-3 or type the action: ").strip().lower()
+                if choice in ("", "1", "keep"):
                     break
-                if choice == "edit":
+                if choice in ("2", "edit"):
                     if s["kind"] == "text":
                         lines = _read_multiline("  Enter new text (blank line to end):")
                         if lines:
@@ -183,12 +185,12 @@ def _build_confirm_callback(console):
                                 "finding": parts[0], "statistic": parts[1], "test": parts[2],
                                 "sample_size": parts[3], "interpretation": parts[4],
                             })
-                        edits[s["id"]] = {"action": "edit", "value": findings}
+                            edits[s["id"]] = {"action": "edit", "value": findings}
                     break
-                if choice == "remove" and s["removable"]:
-                    console.print("[dim]Removal is no longer available here; use keep or edit.[/dim]")
-                    continue
-                console.print("[dim]Type keep or edit.[/dim]")
+                if s["removable"] and choice in ("3", "remove"):
+                    edits[s["id"]] = {"action": "remove"}
+                    break
+                console.print("[dim]Choose one of the listed actions.[/dim]")
 
         final = input("\nProceed? yes / abort: ").strip().lower()
         if final in ("abort", "no"):
