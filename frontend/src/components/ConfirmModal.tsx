@@ -94,7 +94,6 @@ export function ConfirmModal({ payload, onSubmit, onAbort }: ConfirmModalProps) 
           <div style={LABEL_STYLE}>Review extracted structure — domain: {payload.domain}</div>
           <p style={{ margin: '6px 0 0', fontSize: '12px', color: 'var(--text-muted)' }}>
             Keep, edit, or remove each section before the run proceeds. Only the hypothesis is required.
-            Cards are focusable
           </p>
         </div>
 
@@ -104,7 +103,6 @@ export function ConfirmModal({ payload, onSubmit, onAbort }: ConfirmModalProps) 
             return (
               <div
                 key={s.id}
-                tabIndex={0}
                 style={{
                   border: '1px solid var(--border)', borderRadius: '6px', padding: '10px 12px',
                   background: cs.mode === 'remove' ? '#fdf2f2' : 'var(--surface)', outline: 'none',

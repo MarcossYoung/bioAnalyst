@@ -73,6 +73,101 @@ FORMALIZER_STAGE2_SPEC = AgentSpec(
 BIOLOGY_DOMAINS = {"biology", "neuroscience", "genomics", "molecular_biology", "neurobiology"}
 
 
+def _text_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        items = [value]
+    out: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _reference_list(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _completed_analysis_list(value) -> list[dict]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [value]
+    if not isinstance(value, list):
+        raise ValueError("Formalizer stage1 completed_analysis must be a list of findings")
+    out: list[dict] = []
+    for item in value:
+        if isinstance(item, dict):
+            out.append(item)
+        else:
+            raise ValueError("Formalizer stage1 completed_analysis items must be JSON objects")
+    return out
+
+
+def _normalize_stage1_output(stage1: dict) -> dict:
+    if not isinstance(stage1, dict):
+        raise ValueError("Formalizer stage1 must return a JSON object")
+
+    out = dict(stage1)
+    core = out.get("core_hypothesis")
+    if not isinstance(core, str) or not core.strip():
+        raise ValueError("Formalizer stage1 must include a non-empty core_hypothesis string")
+    out["core_hypothesis"] = core.strip()
+    out["domain"] = str(out.get("domain", "unknown") or "unknown").strip() or "unknown"
+    out["starter_data"] = str(out.get("starter_data", "") or "").strip()
+    out["cited_literature"] = _reference_list(out.get("cited_literature"))
+    out["proposed_methods"] = _text_list(out.get("proposed_methods"))
+    out["methods_used"] = _text_list(out.get("methods_used"))
+    out["starter_entities"] = _text_list(out.get("starter_entities"))
+    out["key_entities"] = _text_list(out.get("key_entities"))
+    out["completed_analysis"] = _completed_analysis_list(out.get("completed_analysis"))
+    return out
+
+
+def _normalize_stage2_output(stage2: dict) -> dict:
+    if not isinstance(stage2, dict):
+        raise ValueError("Formalizer stage2 must return a JSON object")
+
+    out = dict(stage2)
+    claims = out.get("atomic_claims")
+    if not isinstance(claims, list):
+        raise ValueError("Formalizer stage2 must include atomic_claims as a list")
+
+    normalized_claims: list[dict] = []
+    for idx, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            raise ValueError("Formalizer stage2 atomic_claims items must be JSON objects")
+        statement = claim.get("statement")
+        null_hypothesis = claim.get("null_hypothesis")
+        if not isinstance(statement, str) or not statement.strip():
+            raise ValueError(f"Formalizer stage2 atomic claim {idx + 1} is missing statement")
+        if not isinstance(null_hypothesis, str) or not null_hypothesis.strip():
+            raise ValueError(f"Formalizer stage2 atomic claim {idx + 1} is missing null_hypothesis")
+        normalized_claim = dict(claim)
+        normalized_claim["id"] = str(claim.get("id") or f"claim_{idx + 1}")
+        normalized_claim["statement"] = statement.strip()
+        normalized_claim["null_hypothesis"] = null_hypothesis.strip()
+        normalized_claims.append(normalized_claim)
+
+    out["atomic_claims"] = normalized_claims
+    out["key_search_terms"] = _text_list(out.get("key_search_terms"))
+    return out
+
+
 def formalize_stage1(raw_text: str) -> dict:
     task = TaskObject(
         title="Stage 1 hypothesis extraction",
@@ -89,12 +184,12 @@ def formalize_stage1(raw_text: str) -> dict:
             "key_entities",
         ),
     )
-    return llm_call_json(
+    return _normalize_stage1_output(llm_call_json(
         "formalizer_stage1",
         FORMALIZER_STAGE1_SPEC.render_system_prompt(),
         task.render(),
         max_tokens=2000,
-    )
+    ))
 
 
 def formalize_stage2(stage1: dict) -> dict:
@@ -109,12 +204,12 @@ def formalize_stage2(stage1: dict) -> dict:
         },
         expected_outputs=("atomic_claims", "key_search_terms"),
     )
-    return llm_call_json(
+    return _normalize_stage2_output(llm_call_json(
         "formalizer_stage2",
         FORMALIZER_STAGE2_SPEC.render_system_prompt(),
         task.render(),
         max_tokens=2000,
-    )
+    ))
 
 
 def formalize(raw_input: str, interactive: bool = True) -> dict:
@@ -134,6 +229,7 @@ def formalize(raw_input: str, interactive: bool = True) -> dict:
     if interactive:
         stage1 = _confirmation_gate(stage1)
 
+    stage1 = _normalize_stage1_output(stage1)
     stage2 = formalize_stage2(stage1)
     return {**stage1, **stage2}
 

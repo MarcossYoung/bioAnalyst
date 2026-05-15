@@ -8,7 +8,8 @@ INTERPRETER_SPEC = AgentSpec(
     name="interpreter",
     mission="Translate typed compute results and genomic measurements into a calibrated narrative without inventing numbers.",
     capabilities=(
-        "Summarize observed genomic patterns from the compute layer and raw gene data.",
+        "Summarize statistical test results (effect sizes, p-values, multiple-testing corrections) from the Compute layer.",
+        "Summarize observed genomic patterns from raw per-gene data.",
         "Flag outlier genes and regulatory overlap.",
         "Cross-reference reproducibility data when present.",
     ),
@@ -18,8 +19,11 @@ INTERPRETER_SPEC = AgentSpec(
         "Return JSON only.",
     ),
     verification_rules=(
-        "Every numeric claim must trace back to the inputs.",
-        "If reproducibility data is present, report what is and is not checkable here.",
+        "Every numeric claim must trace back to a value in the inputs.",
+        "dN/dS values are pairwise human-vs-X, not branch-specific.",
+        "Regulatory overlap is Jaccard-style and not statistically normalized.",
+        "The tool is observational, not a phylogenetic comparative method.",
+        "Omit reproducibility_check (or return []) when no reproducibility section is present in the input.",
     ),
     output_contract=OutputContract(
         summary="Calibrated genomic interpretation.",
@@ -35,20 +39,7 @@ INTERPRETER_SPEC = AgentSpec(
     ),
 )
 
-INTERPRETER_SYSTEM = f"""{INTERPRETER_SPEC.render_system_prompt()}
-
-You read structured outputs from a deterministic Compute layer (statistical test results with
-effect sizes, p-values, multiple-testing corrections), together with raw per-gene genomic data
-and the original hypothesis.
-
-You cannot invent numbers. Every claim about a number must trace to a value in the inputs.
-
-Limitations to state explicitly:
-- dN/dS is pairwise human-vs-X, not branch-specific.
-- Regulatory overlap is Jaccard-style and not statistically normalized.
-- The tool is observational, not a phylogenetic comparative method.
-
-Omit reproducibility_check - or return [] - when no reproducibility section is present."""
+INTERPRETER_SYSTEM = INTERPRETER_SPEC.render_system_prompt()
 
 
 def run_interpreter(

@@ -12,7 +12,8 @@ METHODOLOGIST_SPEC = AgentSpec(
         "Choose a multiple-testing correction and primary tests for robustness.",
     ),
     behavioral_constraints=(
-        "Only pick tests from the library names listed in the compute layer.",
+        "Only pick tests from the library names listed in the task context.",
+        "Always compare starter or expanded.* sets against controls.* — that is the core question every run.",
         "Return only a plan, not computed results.",
         "Keep each rationale to one sentence.",
     ),
@@ -32,21 +33,7 @@ METHODOLOGIST_SPEC = AgentSpec(
 )
 
 
-METHODOLOGIST_SYSTEM = f"""{METHODOLOGIST_SPEC.render_system_prompt()}
-
-Available tests:
-{TEST_LIBRARY_DOC}
-
-The data dict the runtime will pass to the tests has this shape:
-- groups: {{"<group>": {{"<metric>": [values], ...}}}}
-  group names include "starter", "expanded.<set>", and "controls.<set>".
-  metrics: dnds, ortholog_count, paralog_count, duplication_count, regulatory_feature_count.
-- variables: {{"<metric>": [aligned values across gene_index]}} (same metrics as above)
-- gene_index: list of gene symbols matched to variables
-- tables: typically empty.
-
-Design a plan that compares starter (or expanded.*) against controls.* - that is the
-question the tool is asked to answer every run."""
+METHODOLOGIST_SYSTEM = METHODOLOGIST_SPEC.render_system_prompt()
 
 
 def run_methodologist(
@@ -83,42 +70,43 @@ def _build_user_prompt(
     for var, n in (data_summary.get("variables") or {}).items():
         variables_lines.append(f"  {var}: n={n}")
 
-    completed_block = ""
+    context = {
+        "domain": formalized.get("domain", ""),
+        "starter_count": expansion.get("starter_count", 0),
+        "expanded_sets": list((expansion.get("expanded") or {}).keys()),
+        "control_sets": list((expansion.get("controls") or {}).keys()),
+        "available_tests": TEST_LIBRARY_DOC,
+        "data_shape": (
+            "groups: {<group>: {<metric>: [values]}} "
+            "— names: starter, expanded.<set>, controls.<set>; "
+            "metrics: dnds, ortholog_count, paralog_count, duplication_count, regulatory_feature_count. "
+            "variables: {<metric>: [values aligned to gene_index]}. tables: typically empty."
+        ),
+        "prepared_groups": "\n".join(groups_lines) or "(none)",
+        "prepared_variables": "\n".join(variables_lines) or "(none)",
+        "gene_index_size": data_summary.get("n_genes", 0),
+        "tables": data_summary.get("tables", []),
+    }
     if completed_analysis:
-        completed_block = (
-            "\nCOMPLETED ANALYSIS (author-reported; consider designing tests that could "
-            "independently reproduce or contradict these):\n"
+        lines = []
+        for i, finding in enumerate(completed_analysis, 1):
+            entry = f"{i}. {finding.get('finding', '')}"
+            if finding.get("test"):
+                entry += f"  [test: {finding['test']}]"
+            if finding.get("statistic"):
+                entry += f"  [statistic: {finding['statistic']}]"
+            if finding.get("sample_size"):
+                entry += f"  [n: {finding['sample_size']}]"
+            lines.append(entry)
+        context["completed_analysis"] = (
+            "Author-reported (design tests that could reproduce/contradict): " + "; ".join(lines)
         )
-        for i, f in enumerate(completed_analysis, 1):
-            completed_block += (
-                f"  {i}. {f.get('finding', '')}"
-                + (f"  [test: {f['test']}]" if f.get("test") else "")
-                + (f"  [statistic: {f['statistic']}]" if f.get("statistic") else "")
-                + (f"  [n: {f['sample_size']}]" if f.get("sample_size") else "")
-                + "\n"
-            )
 
     task = TaskObject(
         title="Method selection plan",
         semantic_inputs={"hypothesis": formalized.get("core_hypothesis", "")},
         entities=tuple(expansion.get("starter") or []),
-        contextual_state={
-            "domain": formalized.get("domain", ""),
-            "starter_count": expansion.get("starter_count", 0),
-            "expanded_sets": list((expansion.get("expanded") or {}).keys()),
-            "control_sets": list((expansion.get("controls") or {}).keys()),
-        },
+        contextual_state=context,
         expected_outputs=("tests_requested", "correction", "primary_tests", "rationale"),
     )
-
-    return f"""{task.render()}
-
-PREPARED DATA SUMMARY (counts of non-null values per group/metric and per variable):
-groups:
-{chr(10).join(groups_lines) or '  (none)'}
-variables:
-{chr(10).join(variables_lines) or '  (none)'}
-gene_index: {data_summary.get('n_genes', 0)} genes
-tables: {data_summary.get('tables', [])}
-{completed_block}
-"""
+    return task.render()

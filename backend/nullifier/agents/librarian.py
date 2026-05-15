@@ -149,8 +149,15 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
         classifications_raw = llm_call_json_batch("librarian_per_paper", per_paper_inputs)
 
         classifications = []
-        for paper, cls in zip(all_papers, classifications_raw):
-            if "_error" in cls:
+        failed_classifications = []
+        for idx, paper in enumerate(all_papers):
+            cls = classifications_raw[idx] if idx < len(classifications_raw) else {"_error": "missing batch result"}
+            if not isinstance(cls, dict) or "_error" in cls:
+                failed_classifications.append({
+                    "paper_id": f"{paper['source']}:{paper['id']}",
+                    "paper_title": paper["title"],
+                    "error": (cls.get("_error") if isinstance(cls, dict) else "invalid classifier output") or "classifier failed",
+                })
                 continue
             entry = {
                 "paper_id": f"{paper['source']}:{paper['id']}",
@@ -191,6 +198,7 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
         claim_evidence[claim["id"]] = {
             **synthesis,
             "classifications": classifications,
+            "failed_classifications": failed_classifications,
             "retrieved_papers": all_papers,
             "queries_used": expanded,
         }

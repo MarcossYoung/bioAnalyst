@@ -79,10 +79,10 @@ def run_analyst(formalized: dict, use_cache: bool = True, on_gene=None, on_event
 
     reproducibility = _reproducibility_check(formalized, starter, gene_data)
 
-    user_msg = _build_analyst_input(
+    task = _analyst_task(
         formalized, set_a, set_b, gene_data, set_a_stats, set_b_stats, cross_set, reproducibility
     )
-    interpretation = llm_call_json("analyst", ANALYST_SPEC.render_system_prompt(), user_msg, max_tokens=3500)
+    interpretation = llm_call_json("analyst", ANALYST_SPEC.render_system_prompt(), task.render(), max_tokens=3500)
 
     return {
         "skipped": False,
@@ -277,7 +277,7 @@ def _cross_set_analysis(set_a: list[str], set_b: list[str], gene_data: dict) -> 
     }
 
 
-def _build_analyst_input(
+def _analyst_task(
     formalized,
     set_a,
     set_b,
@@ -287,43 +287,46 @@ def _build_analyst_input(
     cross_set,
     reproducibility=None,
 ):
-    repro_section = ""
+    evidence = [
+        f"Per-gene data:\n{_format_per_gene(gene_data)}",
+        f"Set A ({len(set_a)} genes) aggregate stats:\n{set_a_stats}",
+        f"Set B ({len(set_b)} genes) aggregate stats:\n{set_b_stats}" if set_b else "Set B: (none)",
+        f"Cross-set regulatory overlap:\n{cross_set}" if cross_set else "Cross-set overlap: (none)",
+    ]
+
+    context: dict = {
+        "set_a": f"{len(set_a)} genes: {', '.join(set_a)}",
+        "set_b": f"{len(set_b)} genes: {', '.join(set_b)}" if set_b else "(none)",
+    }
     if reproducibility:
-        lines = ["\nREPRODUCIBILITY DATA (the author reported completed analyses - cross-reference these):"]
-        lines.append("Reported findings:")
-        for i, f in enumerate(reproducibility["reported_findings"], 1):
-            lines.append(
-                f"  {i}. {f.get('finding', '')}"
-                + (f"  [statistic: {f['statistic']}]" if f.get("statistic") else "")
-                + (f"  [test: {f['test']}]" if f.get("test") else "")
-                + (f"  [n: {f['sample_size']}]" if f.get("sample_size") else "")
-                + (f"\n     author's interpretation: {f['interpretation']}" if f.get("interpretation") else "")
-            )
-        lines.append("Ensembl-derived values available for these genes:")
+        repro_lines = ["Reported findings:"]
+        for i, finding in enumerate(reproducibility["reported_findings"], 1):
+            entry = f"  {i}. {finding.get('finding', '')}"
+            if finding.get("statistic"):
+                entry += f"  [statistic: {finding['statistic']}]"
+            if finding.get("test"):
+                entry += f"  [test: {finding['test']}]"
+            if finding.get("sample_size"):
+                entry += f"  [n: {finding['sample_size']}]"
+            if finding.get("interpretation"):
+                entry += f"\n     author's interpretation: {finding['interpretation']}"
+            repro_lines.append(entry)
+        repro_lines.append("Ensembl-derivable values:")
         for g, m in reproducibility["ensembl_retrievable"].items():
-            lines.append(f"  {g}: {m}")
-        lines.append("CANNOT be verified from Ensembl here (be honest about this in reproducibility_check):")
+            repro_lines.append(f"  {g}: {m}")
+        repro_lines.append("Not verifiable from Ensembl here:")
         for nv in reproducibility["not_verifiable_here"]:
-            lines.append(f"  - {nv}")
-        repro_section = "\n".join(lines) + "\n"
+            repro_lines.append(f"  - {nv}")
+        context["reproducibility_data"] = "\n".join(repro_lines)
 
-    return f"""HYPOTHESIS: {formalized['core_hypothesis']}
-
-SET A ({len(set_a)} genes): {', '.join(set_a)}
-{f"SET B ({len(set_b)} genes): {', '.join(set_b)}" if set_b else "(no second set identified)"}
-
-PER-GENE GENOMIC DATA SUMMARY:
-{_format_per_gene(gene_data)}
-
-SET A AGGREGATE STATS:
-{set_a_stats}
-
-SET B AGGREGATE STATS:
-{set_b_stats if set_b_stats else "(no set B)"}
-
-CROSS-SET REGULATORY OVERLAP:
-{cross_set if cross_set else "(no second set to compare)"}
-{repro_section}"""
+    return TaskObject(
+        title="Genomic data interpretation",
+        semantic_inputs={"core_hypothesis": formalized["core_hypothesis"]},
+        entities=tuple(set_a + (set_b or [])),
+        evidence=tuple(evidence),
+        contextual_state=context,
+        expected_outputs=tuple(field.name for field in ANALYST_SPEC.output_contract.fields),
+    )
 
 
 def _format_per_gene(gene_data: dict) -> str:
