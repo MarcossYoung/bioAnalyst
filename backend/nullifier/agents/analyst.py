@@ -1,63 +1,70 @@
 from concurrent.futures import ThreadPoolExecutor
 from statistics import mean, stdev
+
 from ..tools.llm_client import llm_call_json
 from ..tools import ensembl
 from .. import events as ev
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
 
-ANALYST_SYSTEM = """You are a genomic data analyst. You receive structured genomic data 
-about two gene sets (or one gene set + control) and a hypothesis about their relationship. 
-Your job is to interpret the genomic patterns relative to the hypothesis.
+ANALYST_SPEC = AgentSpec(
+    name="genomic data analyst",
+    mission="Interpret genomic patterns from Ensembl-derived data and surface only conclusions grounded in the provided numbers.",
+    capabilities=(
+        "Summarize ortholog, paralog, duplication, and regulatory feature patterns.",
+        "Report pairwise regulatory overlap and per-gene outliers.",
+        "Cross-reference reported results against Ensembl-retrievable values when completed analyses are present.",
+    ),
+    behavioral_constraints=(
+        "Do not invent numbers.",
+        "Do not overstate what Ensembl can verify.",
+        "Return JSON only.",
+    ),
+    guarantees=(
+        "The output stays observational rather than pretending to be a phylogenetic comparative analysis.",
+    ),
+    verification_rules=(
+        "dN/dS values are pairwise human-vs-X and not branch-specific.",
+        "If reproducibility data is present, flag what is and is not checkable here.",
+    ),
+    output_contract=OutputContract(
+        summary="Genomic interpretation output.",
+        fields=(
+            OutputField("patterns_observed", "Observed patterns with support polarity and evidence."),
+            OutputField("outlier_genes", "Genes that stand out and why."),
+            OutputField("regulatory_overlap", "Shared TF motifs, Jaccard index, and interpretation."),
+            OutputField("reproducibility_check", "Cross-reference of reported findings against Ensembl values.", required=False),
+            OutputField("limitations", "Explicit limitations of the analysis."),
+            OutputField("overall_genomic_assessment", "supports, neutral, contradicts, or inconclusive."),
+            OutputField("assessment_justification", "Short justification for the overall assessment."),
+        ),
+    ),
+)
 
-You see:
-- For each gene: ortholog count across mammals, dN/dS distribution, paralog count, 
-  duplication events on the gene tree, regulatory features.
-- For each gene SET: aggregate statistics (mean dN/dS, ortholog conservation, etc.)
-- For pairs of sets: overlap in regulatory features (shared TF binding motifs)
-
-You must:
-1. Describe the genomic patterns observed (what's actually in the data).
-2. Interpret what these patterns suggest about the hypothesis (supporting/neutral/contradicting).
-3. Be explicit about LIMITATIONS: the dN/dS values are pairwise human-vs-X (not branch-specific).
-   Regulatory feature overlap is Jaccard-style, not statistically normalized. The Analyst is
-   observational, not a rigorous phylogenetic comparative method.
-4. Flag specific genes that stand out (e.g., one gene with 10x the dN/dS of others).
-5. IF a "REPRODUCIBILITY DATA" section is present, the author has already run analyses and reported
-   numbers. For EACH reported finding, say whether you can independently check it against the
-   Ensembl-derived values you have, and HONESTLY flag what you cannot verify here (e.g.
-   branch-specific dN/dS needs PAML/codeml; gene constraint/LOEUF needs gnomAD; custom statistical
-   tests and sample-size adequacy need the raw study data). Put this in "reproducibility_check".
-
-Respond with ONLY valid JSON:
-{
-  "patterns_observed": [
-    {"pattern": "...", "supports_hypothesis": "yes|no|neutral", "evidence": "specific numbers"}
-  ],
-  "outlier_genes": [
-    {"gene": "...", "why_notable": "...", "implication": "..."}
-  ],
-  "regulatory_overlap": {
-    "shared_tf_motifs": ["..."],
-    "jaccard_index": 0.0,
-    "interpretation": "..."
-  },
-  "reproducibility_check": [
-    {"reported": "the author's finding/statistic", "ensembl_value": "what Ensembl gives, or 'n/a'",
-     "verifiable": true, "note": "agrees / disagrees / not checkable here because ..."}
-  ],
-  "limitations": ["..."],
-  "overall_genomic_assessment": "supports|neutral|contradicts|inconclusive",
-  "assessment_justification": "2-3 sentences"
-}
-(Omit "reproducibility_check" — or return [] — when no REPRODUCIBILITY DATA section is given.)"""
+ANALYST_SPLIT_SPEC = AgentSpec(
+    name="genomic set splitter",
+    mission="Split starter entities into two biologically meaningful sets when the hypothesis names one.",
+    capabilities=(
+        "Separate genes into set_a and set_b from the hypothesis context.",
+        "Fail closed to a single set when the split is not confident.",
+    ),
+    behavioral_constraints=(
+        "Do not force a split when the hypothesis does not support one.",
+        "Return JSON only.",
+    ),
+    output_contract=OutputContract(
+        summary="Set partition output.",
+        fields=(
+            OutputField("set_a_label", "Label for the first set."),
+            OutputField("set_a", "Genes assigned to set A."),
+            OutputField("set_b_label", "Label for the second set."),
+            OutputField("set_b", "Genes assigned to set B."),
+        ),
+    ),
+)
 
 
 def run_analyst(formalized: dict, use_cache: bool = True, on_gene=None, on_event=None) -> dict:
-    """Pull Ensembl data for starter entities, compute stats, send to Claude for interpretation.
-
-    on_gene(gene: str, status: "ok"|"error") called after each Ensembl fetch (from worker threads).
-    on_event(Event) is invoked for typed events (e.g. analyst_symbol_resolved).
-    """
     starter = formalized.get("starter_entities", [])
     if not starter:
         return {"skipped": True, "reason": "No starter entities provided in input."}
@@ -66,19 +73,16 @@ def run_analyst(formalized: dict, use_cache: bool = True, on_gene=None, on_event
 
     gene_data = _fetch_all_gene_data(starter, use_cache, on_gene=on_gene, on_event=on_event)
 
-    # Compute aggregate statistics per set
     set_a_stats = _set_statistics(set_a, gene_data) if set_a else None
     set_b_stats = _set_statistics(set_b, gene_data) if set_b else None
     cross_set = _cross_set_analysis(set_a, set_b, gene_data) if (set_a and set_b) else None
 
-    # Reproducibility check — only when the author reported completed analyses
     reproducibility = _reproducibility_check(formalized, starter, gene_data)
 
-    # Send to Claude for interpretation
     user_msg = _build_analyst_input(
         formalized, set_a, set_b, gene_data, set_a_stats, set_b_stats, cross_set, reproducibility
     )
-    interpretation = llm_call_json("analyst", ANALYST_SYSTEM, user_msg, max_tokens=3500)
+    interpretation = llm_call_json("analyst", ANALYST_SPEC.render_system_prompt(), user_msg, max_tokens=3500)
 
     return {
         "skipped": False,
@@ -93,10 +97,9 @@ def run_analyst(formalized: dict, use_cache: bool = True, on_gene=None, on_event
     }
 
 
-# Categories the Analyst genuinely cannot verify from Ensembl alone.
 _NOT_VERIFIABLE_HERE = [
     "branch-specific / lineage-specific dN/dS (requires PAML/codeml on an alignment)",
-    "gene constraint scores (pLI / LOEUF — requires gnomAD)",
+    "gene constraint scores (pLI / LOEUF - requires gnomAD)",
     "custom statistical tests and their p-values (requires the raw study data)",
     "sample-size adequacy and power (requires the study design)",
     "expression / single-cell results (requires the relevant atlas, not Ensembl gene records)",
@@ -104,9 +107,6 @@ _NOT_VERIFIABLE_HERE = [
 
 
 def _reproducibility_check(formalized: dict, genes: list[str], gene_data: dict) -> dict | None:
-    """If the author reported completed analyses, surface the Ensembl-derived values
-    available for cross-reference. The actual reconciliation is done by the LLM
-    (analyst interpretation) and the Skeptic; this just assembles the inputs honestly."""
     completed = formalized.get("completed_analysis") or []
     if not completed:
         return None
@@ -117,8 +117,7 @@ def _reproducibility_check(formalized: dict, genes: list[str], gene_data: dict) 
         if "_error" in d:
             retrievable[g] = {"available": False, "reason": d["_error"]}
             continue
-        dnds_vals = [o["dnds"] for o in d.get("orthologs", [])
-                     if o.get("dnds") is not None and o["dnds"] < 10]
+        dnds_vals = [o["dnds"] for o in d.get("orthologs", []) if o.get("dnds") is not None and o["dnds"] < 10]
         retrievable[g] = {
             "available": True,
             "ortholog_count": len(d.get("orthologs", [])),
@@ -139,37 +138,30 @@ def _reproducibility_check(formalized: dict, genes: list[str], gene_data: dict) 
 
 
 def _split_into_sets(formalized: dict, starter: list[str]) -> tuple[list[str], list[str]]:
-    """Split starter entities into two sets based on hypothesis context.
-    Uses Claude to classify if the hypothesis names two distinct sets; otherwise returns (starter, [])."""
-    SPLIT_SYSTEM = """You receive a hypothesis and a list of gene symbols. The hypothesis 
-likely names two distinct sets of genes. Classify each gene into 'set_a' or 'set_b' based 
-on the hypothesis. If you cannot confidently split into two sets, put all genes in set_a 
-and leave set_b empty.
-
-Respond with ONLY valid JSON:
-{
-  "set_a_label": "...",
-  "set_a": ["GENE1", "GENE2", ...],
-  "set_b_label": "...",
-  "set_b": ["GENE3", ...]
-}"""
-    user = f"""Hypothesis: {formalized['core_hypothesis']}
-
-Genes to classify: {', '.join(starter)}
-"""
-    result = llm_call_json("analyst", SPLIT_SYSTEM, user, max_tokens=1000)
+    task = TaskObject(
+        title="Split starter entities into two sets",
+        semantic_inputs={"core_hypothesis": formalized.get("core_hypothesis", "")},
+        entities=tuple(starter),
+        contextual_state={"hypothesis": formalized.get("core_hypothesis", "")},
+        expected_outputs=("set_a", "set_b", "set_a_label", "set_b_label"),
+    )
+    result = llm_call_json(
+        "analyst",
+        ANALYST_SPLIT_SPEC.render_system_prompt(),
+        task.render()
+        + "\n\nYou receive a hypothesis and a list of gene symbols. If you cannot confidently split the genes into two sets, put all genes in set_a and leave set_b empty.",
+        max_tokens=1000,
+    )
     return result.get("set_a", starter), result.get("set_b", [])
 
 
-def _fetch_all_gene_data(genes: list[str], use_cache: bool, on_gene=None,
-                         starter_genes: set[str] | None = None,
-                         on_event=None) -> dict:
-    """Fetch Ensembl data for a gene list using a tiered strategy.
-
-    Starter genes get a full 6-call fetch. Expanded/control genes get a light
-    2-call fetch (lookup + orthologs) since dN/dS and ortholog_count are the
-    primary inputs to the compute layer; the remaining fields default to empty.
-    """
+def _fetch_all_gene_data(
+    genes: list[str],
+    use_cache: bool,
+    on_gene=None,
+    starter_genes: set[str] | None = None,
+    on_event=None,
+) -> dict:
     starters = {g.upper() for g in (starter_genes or [])}
 
     def _full(g: str) -> tuple[str, dict]:
@@ -188,12 +180,8 @@ def _fetch_all_gene_data(genes: list[str], use_cache: bool, on_gene=None,
         reg = []
         motifs = []
         if info.get("chromosome") and info.get("start") and info.get("end"):
-            reg = ensembl.get_regulatory_features(
-                info["chromosome"], info["start"], info["end"], use_cache=use_cache
-            )
-            motifs = ensembl.get_motif_features(
-                info["chromosome"], info["start"], info["end"], use_cache=use_cache
-            )
+            reg = ensembl.get_regulatory_features(info["chromosome"], info["start"], info["end"], use_cache=use_cache)
+            motifs = ensembl.get_motif_features(info["chromosome"], info["start"], info["end"], use_cache=use_cache)
         if on_gene:
             on_gene(g, "ok")
         return g, {
@@ -207,7 +195,6 @@ def _fetch_all_gene_data(genes: list[str], use_cache: bool, on_gene=None,
         }
 
     def _light(g: str) -> tuple[str, dict]:
-        """2-call fetch: lookup + orthologs only."""
         info = ensembl.lookup_gene(g, use_cache)
         if not info:
             if on_gene:
@@ -241,23 +228,18 @@ def _fetch_all_gene_data(genes: list[str], use_cache: bool, on_gene=None,
 
 
 def _set_statistics(genes: list[str], gene_data: dict) -> dict:
-    """Aggregate stats across a gene set."""
     valid = [g for g in genes if "_error" not in gene_data.get(g, {})]
     if not valid:
         return {"valid_gene_count": 0}
 
     ortholog_counts = [len(gene_data[g]["orthologs"]) for g in valid]
     paralog_counts = [len(gene_data[g]["paralogs"]) for g in valid]
-    duplication_counts = [
-        (gene_data[g]["gene_tree"] or {}).get("duplication_count", 0)
-        for g in valid
-    ]
+    duplication_counts = [(gene_data[g]["gene_tree"] or {}).get("duplication_count", 0) for g in valid]
 
-    # Pool dN/dS values across all orthologs of all genes in the set
     dnds_values = []
     for g in valid:
         for o in gene_data[g]["orthologs"]:
-            if o.get("dnds") is not None and o["dnds"] < 10:  # filter outliers
+            if o.get("dnds") is not None and o["dnds"] < 10:
                 dnds_values.append(o["dnds"])
 
     return {
@@ -274,7 +256,6 @@ def _set_statistics(genes: list[str], gene_data: dict) -> dict:
 
 
 def _cross_set_analysis(set_a: list[str], set_b: list[str], gene_data: dict) -> dict:
-    """Compare regulatory feature overlap between two gene sets (Jaccard on TF motifs)."""
     def _tfs(genes: list[str]) -> set:
         tfs = set()
         for g in genes:
@@ -296,11 +277,19 @@ def _cross_set_analysis(set_a: list[str], set_b: list[str], gene_data: dict) -> 
     }
 
 
-def _build_analyst_input(formalized, set_a, set_b, gene_data, set_a_stats, set_b_stats, cross_set,
-                         reproducibility=None):
+def _build_analyst_input(
+    formalized,
+    set_a,
+    set_b,
+    gene_data,
+    set_a_stats,
+    set_b_stats,
+    cross_set,
+    reproducibility=None,
+):
     repro_section = ""
     if reproducibility:
-        lines = ["\nREPRODUCIBILITY DATA (the author reported completed analyses — cross-reference these):"]
+        lines = ["\nREPRODUCIBILITY DATA (the author reported completed analyses - cross-reference these):"]
         lines.append("Reported findings:")
         for i, f in enumerate(reproducibility["reported_findings"], 1):
             lines.append(

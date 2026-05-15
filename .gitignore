@@ -6,4 +6,4 @@ __pycache__/
 backend/nullifier/static/
 node_modules/
 frontend/dist/
-processes/
+process/

@@ -6,72 +6,83 @@ from ..tools.literature import federated_search, find_by_title, SourceHealth
 from ..tools.query_expander import expand_queries
 from ..tools.flag_store import get_relevant_flags, format_flags_for_prompt
 from .. import events as ev
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
-# Hard ceiling on the per-claim literature fan-out, in seconds. With the
-# circuit breaker + tight per-request timeouts this should almost never fire.
+
 _PER_CLAIM_SEARCH_BUDGET = 45.0
 
 
-PER_PAPER_SYSTEM_BASE = """You are a scientific paper classifier. Given an atomic claim 
-and ONE paper abstract, classify the paper as one of:
-- "supports": directly supports the claim
-- "contradicts": directly contradicts the claim
-- "tangential": related but doesn't directly bear on the claim
-- "confounder": describes an alternative explanation
+LIBRARIAN_PAPER_SPEC = AgentSpec(
+    name="scientific paper classifier",
+    mission="Classify one paper against one atomic claim while preserving the exact abstract sentence that justifies the judgment.",
+    capabilities=(
+        "Map each paper to supports, contradicts, tangential, or confounder.",
+        "Quote the exact abstract sentence that supports the classification.",
+        "Prefer tangential when no exact supporting sentence exists.",
+    ),
+    behavioral_constraints=(
+        "Do not invent a supporting quote.",
+        "If you cannot quote a sentence that justifies the classification, classify as tangential.",
+        "Return JSON only.",
+    ),
+    verification_rules=(
+        "The quote must be verbatim from the abstract.",
+        "The classifier should be conservative when evidence is indirect.",
+    ),
+    output_contract=OutputContract(
+        summary="Per-paper classification result.",
+        fields=(
+            OutputField("classification", "supports, contradicts, tangential, or confounder."),
+            OutputField("justification_quote", "Exact sentence copied verbatim from the abstract."),
+            OutputField("reasoning", "Brief explanation of the classification."),
+        ),
+    ),
+)
 
-CRITICAL: Quote the EXACT sentence from the abstract that justifies your classification. 
-If you cannot quote a sentence that justifies it, classify as "tangential".
-
-Respond with ONLY valid JSON:
-{
-  "classification": "supports|contradicts|tangential|confounder",
-  "justification_quote": "EXACT sentence from abstract, verbatim",
-  "reasoning": "brief explanation"
-}"""
-
-
-SYNTHESIZER_SYSTEM = """You are a scientific librarian synthesizing per-paper classifications 
-into an overall evidence assessment for one atomic claim.
-
-You receive:
-- The atomic claim
-- Per-paper classifications (from a faster model)
-
-Produce an overall assessment.
-
-CRITICAL: Distinguish UNSTUDIED from CONTRADICTED.
-- "well-studied": many papers directly address this exact claim
-- "sparsely-studied": a few papers touch on it
-- "unstudied": no papers directly investigate this claim (even if adjacent topics are studied)
-
-Unstudied is NOT the same as weak. A novel hypothesis with no literature is novel, not falsified.
-
-Respond with ONLY valid JSON:
-{
-  "claim_id": "...",
-  "confounders_identified": [
-    {"confounder": "...", "source_paper_title": "...", "why_it_matters": "..."}
-  ],
-  "evidence_strength": "strong|moderate|weak|absent",
-  "novelty_flag": "well-studied|sparsely-studied|unstudied",
-  "literature_gap": "what is NOT yet studied that would test this claim",
-  "synthesis": "2-3 sentences summarizing the literature state"
-}"""
+LIBRARIAN_SYNTHESIS_SPEC = AgentSpec(
+    name="scientific librarian synthesizer",
+    mission="Collapse per-paper classifications into an overall evidence assessment for one atomic claim.",
+    capabilities=(
+        "Distinguish unstudiable from contradicted claims.",
+        "Summarize evidence strength and novelty state.",
+        "Identify confounders and remaining literature gaps.",
+    ),
+    behavioral_constraints=(
+        "Do not confuse unstudied with weak.",
+        "Return JSON only.",
+    ),
+    guarantees=(
+        "The synthesis reflects the classified papers rather than inventing new evidence.",
+    ),
+    output_contract=OutputContract(
+        summary="Claim-level literature synthesis.",
+        fields=(
+            OutputField("claim_id", "Atomic claim identifier."),
+            OutputField("confounders_identified", "Alternative explanations observed in the literature."),
+            OutputField("evidence_strength", "strong, moderate, weak, or absent."),
+            OutputField("novelty_flag", "well-studied, sparsely-studied, or unstudied."),
+            OutputField("literature_gap", "What is still missing from the literature."),
+            OutputField("synthesis", "Two to three sentence summary of the evidence state."),
+        ),
+    ),
+)
 
 
 def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event=None) -> dict:
     relevant_flags = get_relevant_flags(
         formalized.get("core_hypothesis", ""),
         formalized.get("domain", "unknown"),
-        formalized.get("key_entities", []) + formalized.get("starter_entities", [])
+        formalized.get("key_entities", []) + formalized.get("starter_entities", []),
     )
     flags_section = format_flags_for_prompt(relevant_flags)
-    per_paper_system = (flags_section + "\n\n" + PER_PAPER_SYSTEM_BASE) if flags_section else PER_PAPER_SYSTEM_BASE
+    per_paper_system = (
+        flags_section + "\n\n" + LIBRARIAN_PAPER_SPEC.render_system_prompt()
+        if flags_section
+        else LIBRARIAN_PAPER_SPEC.render_system_prompt()
+    )
 
-    # One circuit breaker shared across every search in this run.
     health = SourceHealth()
 
-    # Validate user-cited literature (in parallel — one federated search per ref)
     cited_refs = formalized.get("cited_literature", [])
     cited_validated = []
     if cited_refs:
@@ -93,12 +104,10 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
     starter_entities = formalized.get("starter_entities", [])
 
     for claim in formalized.get("atomic_claims", []):
-        # Expand queries
         expanded = expand_queries(claim, starter_entities)
         if on_event:
             on_event(ev.queries_expanded(claim["id"], len(expanded)))
 
-        # Federated search across all query variants concurrently
         all_papers = []
         seen_ids = set()
         if expanded:
@@ -133,14 +142,12 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
         if on_event:
             on_event(ev.papers_retrieved(claim["id"], len(all_papers)))
 
-        # === Per-paper classification (LOCAL, parallel) ===
         per_paper_inputs = [
             (per_paper_system, _build_per_paper_input(claim, p), 800)
             for p in all_papers
         ]
         classifications_raw = llm_call_json_batch("librarian_per_paper", per_paper_inputs)
 
-        # Stitch results back to papers
         classifications = []
         for paper, cls in zip(all_papers, classifications_raw):
             if "_error" in cls:
@@ -158,18 +165,28 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
             if on_event:
                 on_event(ev.paper_classified(claim["id"], paper["title"], entry["classification"]))
 
-        # === Synthesizer (CLAUDE) ===
-        synthesizer_input = _build_synthesizer_input(claim, classifications)
+        synth_task = TaskObject(
+            title="Claim-level literature synthesis",
+            semantic_inputs={"claim": claim},
+            evidence=tuple(c["paper_title"] for c in classifications),
+            contextual_state={"claim_id": claim["id"]},
+            expected_outputs=("confounders_identified", "evidence_strength", "novelty_flag", "literature_gap", "synthesis"),
+        )
         synthesis = llm_call_json(
-            "librarian_synthesizer", SYNTHESIZER_SYSTEM, synthesizer_input, max_tokens=2000
+            "librarian_synthesizer",
+            LIBRARIAN_SYNTHESIS_SPEC.render_system_prompt(),
+            synth_task.render() + "\n\n" + _build_synthesizer_input(claim, classifications),
+            max_tokens=2000,
         )
 
         if on_event:
-            on_event(ev.synthesis_ready(
-                claim["id"],
-                synthesis.get("evidence_strength", "?"),
-                synthesis.get("novelty_flag", "?"),
-            ))
+            on_event(
+                ev.synthesis_ready(
+                    claim["id"],
+                    synthesis.get("evidence_strength", "?"),
+                    synthesis.get("novelty_flag", "?"),
+                )
+            )
 
         claim_evidence[claim["id"]] = {
             **synthesis,
@@ -187,14 +204,15 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
 
 
 def _build_per_paper_input(claim: dict, paper: dict) -> str:
-    return f"""ATOMIC CLAIM: {claim['statement']}
-NULL HYPOTHESIS: {claim['null_hypothesis']}
-
-PAPER:
-Title: {paper['title']}
-Year: {paper.get('year', '?')}
-Abstract: {paper['abstract'][:2000]}
-"""
+    task = TaskObject(
+        title="Per-paper classification",
+        semantic_inputs={"claim": claim["statement"], "null_hypothesis": claim["null_hypothesis"]},
+        evidence=(paper.get("title", ""), paper.get("abstract", "")[:2000]),
+        contextual_state={"year": paper.get("year", "?"), "source": paper.get("source", "")},
+        constraints=("Quote the exact abstract sentence that justifies the classification.",),
+        expected_outputs=("classification", "justification_quote", "reasoning"),
+    )
+    return task.render()
 
 
 def _build_synthesizer_input(claim: dict, classifications: list[dict]) -> str:

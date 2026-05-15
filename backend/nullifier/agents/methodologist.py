@@ -1,20 +1,40 @@
-"""Methodologist agent (v6).
-
-Receives the hypothesis, the gene-set expansion result, and a summary of the
-data the runtime has prepared. Returns a structured analysis plan consumable
-by ``tools.compute.run_analysis_plan``. Does NOT run any computation.
-"""
 from ..tools.llm_client import llm_call_json
 from ..tools.compute import TEST_LIBRARY, TEST_LIBRARY_DOC
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
 
-METHODOLOGIST_SYSTEM = f"""You are a Methodologist. Given a hypothesis, the gene-set context
-(starter + canonical sets + matched controls), and a summary of prepared data, you decide
-which statistical tests from the available library to run, with what inputs, and what
-multiple-testing correction to apply.
+METHODOLOGIST_SPEC = AgentSpec(
+    name="methodologist",
+    mission="Choose a deterministic analysis plan from the compute library based on the prepared gene-set data.",
+    capabilities=(
+        "Select tests from the available library.",
+        "Define inputs for each test.",
+        "Choose a multiple-testing correction and primary tests for robustness.",
+    ),
+    behavioral_constraints=(
+        "Only pick tests from the library names listed in the compute layer.",
+        "Return only a plan, not computed results.",
+        "Keep each rationale to one sentence.",
+    ),
+    verification_rules=(
+        "If no tests apply, return an empty list.",
+        "Always pair mann_whitney_posthoc with a correction when there are more than two groups.",
+    ),
+    output_contract=OutputContract(
+        summary="Structured analysis plan for the compute layer.",
+        fields=(
+            OutputField("tests_requested", "Tests and inputs to execute."),
+            OutputField("correction", "Multiple-testing correction strategy."),
+            OutputField("primary_tests", "Tests used for leave-one-out robustness checks."),
+            OutputField("rationale", "Overall plan justification."),
+        ),
+    ),
+)
 
-You produce only a PLAN. You do NOT compute results.
 
+METHODOLOGIST_SYSTEM = f"""{METHODOLOGIST_SPEC.render_system_prompt()}
+
+Available tests:
 {TEST_LIBRARY_DOC}
 
 The data dict the runtime will pass to the tests has this shape:
@@ -25,30 +45,16 @@ The data dict the runtime will pass to the tests has this shape:
 - gene_index: list of gene symbols matched to variables
 - tables: typically empty.
 
-Rules:
-- Only pick tests from the library names listed above. If nothing applicable, return an empty list.
-- For mann_whitney_posthoc with >2 groups, always pair with a correction.
-- Mark 1-3 tests as primary_tests — those are used for leave-one-out robustness checks.
-- The default question is: does the starter (or an expanded canonical set) differ from
-  controls.* on one or more genomic metrics?
-- Keep each rationale to one sentence.
-
-Respond with ONLY valid JSON:
-{{
-  "tests_requested": [
-    {{"test": "<library_name>", "inputs": {{...}}, "rationale": "<one sentence>"}}
-  ],
-  "correction": "benjamini_hochberg|bonferroni|holm|none",
-  "primary_tests": [
-    {{"test": "<library_name>", "inputs": {{...}}}}
-  ],
-  "rationale": "<2-3 sentence overall plan justification>"
-}}"""
+Design a plan that compares starter (or expanded.*) against controls.* - that is the
+question the tool is asked to answer every run."""
 
 
-def run_methodologist(formalized: dict, expansion: dict, data_summary: dict,
-                      completed_analysis: list | None = None) -> dict:
-    """Produce a structured analysis plan consumable by ``tools.compute.run_analysis_plan``."""
+def run_methodologist(
+    formalized: dict,
+    expansion: dict,
+    data_summary: dict,
+    completed_analysis: list | None = None,
+) -> dict:
     user = _build_user_prompt(formalized, expansion, data_summary, completed_analysis or [])
     plan = llm_call_json("methodologist", METHODOLOGIST_SYSTEM, user, max_tokens=2500)
 
@@ -57,7 +63,6 @@ def run_methodologist(formalized: dict, expansion: dict, data_summary: dict,
     plan.setdefault("tests_requested", [])
     plan.setdefault("primary_tests", [])
     plan.setdefault("correction", "benjamini_hochberg")
-    # Drop primary_tests entries that reference an unknown test (they would never run).
     plan["primary_tests"] = [
         t for t in (plan.get("primary_tests") or [])
         if isinstance(t, dict) and t.get("test") in TEST_LIBRARY
@@ -65,8 +70,12 @@ def run_methodologist(formalized: dict, expansion: dict, data_summary: dict,
     return plan
 
 
-def _build_user_prompt(formalized: dict, expansion: dict, data_summary: dict,
-                       completed_analysis: list) -> str:
+def _build_user_prompt(
+    formalized: dict,
+    expansion: dict,
+    data_summary: dict,
+    completed_analysis: list,
+) -> str:
     groups_lines = []
     for grp, metrics in (data_summary.get("groups") or {}).items():
         groups_lines.append(f"  {grp}: {dict(metrics)}")
@@ -89,15 +98,20 @@ def _build_user_prompt(formalized: dict, expansion: dict, data_summary: dict,
                 + "\n"
             )
 
-    return f"""HYPOTHESIS: {formalized.get('core_hypothesis', '')}
+    task = TaskObject(
+        title="Method selection plan",
+        semantic_inputs={"hypothesis": formalized.get("core_hypothesis", "")},
+        entities=tuple(expansion.get("starter") or []),
+        contextual_state={
+            "domain": formalized.get("domain", ""),
+            "starter_count": expansion.get("starter_count", 0),
+            "expanded_sets": list((expansion.get("expanded") or {}).keys()),
+            "control_sets": list((expansion.get("controls") or {}).keys()),
+        },
+        expected_outputs=("tests_requested", "correction", "primary_tests", "rationale"),
+    )
 
-DOMAIN: {formalized.get('domain', '')}
-
-GENE-SET CONTEXT:
-  starter ({expansion.get('starter_count', 0)}): {', '.join(expansion.get('starter') or [])}
-  expanded sets: {list((expansion.get('expanded') or {}).keys())}
-  control sets: {list((expansion.get('controls') or {}).keys())}
-  source: {expansion.get('source', '')}
+    return f"""{task.render()}
 
 PREPARED DATA SUMMARY (counts of non-null values per group/metric and per variable):
 groups:
@@ -107,5 +121,4 @@ variables:
 gene_index: {data_summary.get('n_genes', 0)} genes
 tables: {data_summary.get('tables', [])}
 {completed_block}
-Design a plan that compares starter (or expanded.*) against controls.* — that's the
-question the tool is asked to answer every run."""
+"""

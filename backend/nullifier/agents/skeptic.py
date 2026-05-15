@@ -1,91 +1,89 @@
 from ..tools.llm_client import llm_call_json
-
-SKEPTIC_SYSTEM_BASE = """You are a scientific skeptic. Stress-test a hypothesis by finding
-its weakest points. You see the hypothesis, atomic claims, the Librarian's evidence
-assessment, AND the raw top abstracts. Use the raw abstracts to independently sanity-check
-the Librarian's classifications before scoring.
-
-1. Identify the TOP 3 alternative explanations. MUST consider at minimum:
-   - Allometric scaling: "is the apparent correlation just a function of a third
-     variable like system size/complexity?"
-   - Shared upstream cause: "is there a third factor that drives both A and B
-     independently, making their correlation non-causal?"
-   - Selection bias: "does the user's cited literature represent a biased sample?"
-   - Simpler mechanistic story: "is there a simpler mechanism that explains the same
-     observations without invoking the hypothesis?"
-
-2. Score each from 1 (falsified) to 10 (strongly supported):
-   - statistical_robustness
-   - literature_consensus
-   - mechanistic_plausibility
-   - counter_explanation_risk (INVERTED: 10 = survives alternatives well)
-   - novelty_adjusted_confidence (penalize confidence when novelty_flag is 'unstudied' —
-     don't score a hypothesis WEAK just because no one has studied it; score it UNTESTED)
-   - genomic_evidence_alignment (how well genomic patterns — dN/dS, ortholog conservation,
-     regulatory overlap — align with the hypothesis; score 5 (neutral) if no genomic data available)
-   - overall_falsifiability_score
-
-3. Verdict: STRONG | MODERATE | WEAK | FALSIFIED | NOVEL-UNTESTED
-   Use NOVEL-UNTESTED when novelty_flag is "unstudied" across claims — the hypothesis
-   is not supported OR refuted by existing literature; it needs primary investigation.
-
-4. Propose the SINGLE most decisive experiment/analysis.
-
-Respond with ONLY valid JSON:
-{
-  "top_alternative_explanations": [
-    {
-      "explanation": "...",
-      "plausibility": "high|medium|low",
-      "why": "...",
-      "how_to_rule_out": "..."
-    }
-  ],
-  "scores": {
-    "statistical_robustness": 0,
-    "literature_consensus": 0,
-    "mechanistic_plausibility": 0,
-    "counter_explanation_risk": 0,
-    "novelty_adjusted_confidence": 0,
-    "genomic_evidence_alignment": 0,
-    "overall_falsifiability_score": 0
-  },
-  "verdict": "STRONG|MODERATE|WEAK|FALSIFIED|NOVEL-UNTESTED",
-  "verdict_justification": "2-3 sentences",
-  "decisive_experiment": "specific method + dataset + expected outcome under H1 vs H0",
-  "librarian_sanity_check": "brief note on whether Librarian classifications seem correct based on abstracts you saw"
-}"""
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
 
-# Appended when the author has already run analyses and reported results.
+SKEPTIC_SPEC = AgentSpec(
+    name="scientific skeptic",
+    mission="Stress-test a hypothesis, score its support, and surface the most serious alternative explanations and execution risks.",
+    capabilities=(
+        "Identify alternative explanations.",
+        "Score evidence across statistical, literature, mechanistic, novelty, and genomic dimensions.",
+        "Propose a single decisive experiment.",
+    ),
+    behavioral_constraints=(
+        "Do not treat novelty as weakness by itself.",
+        "Do not invent evidence not present in the inputs.",
+        "Return JSON only.",
+    ),
+    verification_rules=(
+        "If the analysis includes completed results, critique execution rather than just the idea.",
+        "If high-severity statistical or methodological issues are present, the verdict must become RESULTS-PROBLEMATIC.",
+    ),
+    output_contract=OutputContract(
+        summary="Final skeptical verdict and supporting breakdown.",
+        fields=(
+            OutputField("top_alternative_explanations", "Top competing explanations."),
+            OutputField("scores", "Score breakdown across the evidence dimensions."),
+            OutputField("verdict", "STRONG, MODERATE, WEAK, FALSIFIED, NOVEL-UNTESTED, or RESULTS-PROBLEMATIC."),
+            OutputField("verdict_justification", "Short justification for the verdict."),
+            OutputField("decisive_experiment", "Single most decisive experiment or analysis."),
+            OutputField("librarian_sanity_check", "Brief note on paper-classification sanity."),
+        ),
+    ),
+)
+
+SKEPTIC_SYSTEM_BASE = f"""{SKEPTIC_SPEC.render_system_prompt()}
+
+You see the hypothesis, atomic claims, the Librarian's evidence assessment, and the raw top abstracts.
+Use the raw abstracts to independently sanity-check the Librarian's classifications before scoring.
+
+Alternative explanations to consider at minimum:
+- Allometric scaling
+- Shared upstream cause
+- Selection bias
+- Simpler mechanistic story
+
+Scores are from 1 (falsified) to 10 (strongly supported):
+- statistical_robustness
+- literature_consensus
+- mechanistic_plausibility
+- counter_explanation_risk
+- novelty_adjusted_confidence
+- genomic_evidence_alignment
+- overall_falsifiability_score
+
+Use NOVEL-UNTESTED when novelty_flag is unstudied across claims.
+Propose the single most decisive experiment or analysis."""
+
+
 SKEPTIC_CRITIQUE_BLOCK = """
 
-ADDITIONAL TASK — CRITIQUE THE COMPLETED ANALYSIS:
-You are also given METHODS USED and COMPLETED ANALYSIS — work the author has already done.
-Critique the EXECUTION, not just the idea. Be specific and cite the reported numbers.
+ADDITIONAL TASK - CRITIQUE THE COMPLETED ANALYSIS:
+You are also given METHODS USED and COMPLETED ANALYSIS - work the author has already done.
+Critique the execution, not just the idea. Be specific and cite the reported numbers.
 
 Evaluate, at minimum:
-  - Sample size adequacy (e.g. a Spearman correlation on n=4 is not interpretable)
-  - Multiple-testing correction (were many comparisons run without adjusting alpha?)
-  - Phylogenetic non-independence (cross-species comparisons treated as independent data points?)
-  - Test appropriateness (right test for the data type / distribution / design?)
-  - Effect size vs p-value (is significance conflated with magnitude / importance?)
-  - Interpretation overreach (does the stated conclusion exceed what the data can bear?)
+  - Sample size adequacy
+  - Multiple-testing correction
+  - Phylogenetic non-independence
+  - Test appropriateness
+  - Effect size vs p-value
+  - Interpretation overreach
 
-Add these FOUR sub-objects to your JSON (each: {"severity": "high|medium|low", "issues": ["..."], "notes": "..."}):
-  "methods_critique"        — design / method appropriateness and confounds
-  "statistical_critique"    — sample size, multiple testing, test choice, effect size vs p
-  "reproducibility_check"   — which reported numbers are independently checkable and against what
-                              (reconcile with the Analyst's reproducibility data if provided);
-                              be honest about what CANNOT be verified here
-  "interpretation_critique" — overreach, causal language on correlational data, generalization
+Add these four sub-objects to your JSON:
+  "methods_critique"
+  "statistical_critique"
+  "reproducibility_check"
+  "interpretation_critique"
 
-Add FOUR scores to "scores" (1 = severe problems, 10 = clean execution):
-  "methods_critique_score", "statistical_critique_score", "reproducibility_score", "interpretation_critique_score"
+Add four scores to "scores":
+  "methods_critique_score"
+  "statistical_critique_score"
+  "reproducibility_score"
+  "interpretation_critique_score"
 
-VERDICT OVERRIDE: if the completed analysis has HIGH-severity methodological or statistical problems,
-the verdict MUST be "RESULTS-PROBLEMATIC". This takes precedence over NOVEL-UNTESTED and over any
-literature-based verdict — fixing the analysis comes before the novelty question matters.
+If the completed analysis has high-severity methodological or statistical problems, the verdict must be
+"RESULTS-PROBLEMATIC".
 """
 
 
@@ -97,9 +95,7 @@ def stress_test(formalized: dict, evidence: dict, analyst_result: dict | None = 
 
         top_abstracts = []
         for p in assessment.get("retrieved_papers", [])[:3]:
-            top_abstracts.append(
-                f"  [{p.get('year', '?')}] {p['title']}\n  {p['abstract'][:500]}"
-            )
+            top_abstracts.append(f"  [{p.get('year', '?')}] {p['title']}\n  {p['abstract'][:500]}")
 
         claims_and_evidence.append(
             f"[{cid}] {claim['statement']}\n"
@@ -119,7 +115,24 @@ def stress_test(formalized: dict, evidence: dict, analyst_result: dict | None = 
 
     system = SKEPTIC_SYSTEM_BASE + (SKEPTIC_CRITIQUE_BLOCK if critique_active else "")
 
-    user_msg = f"""CORE HYPOTHESIS:
+    task = TaskObject(
+        title="Final skeptical review",
+        semantic_inputs={"hypothesis": formalized.get("core_hypothesis", "")},
+        entities=tuple(formalized.get("starter_entities", []) or []),
+        contextual_state={"domain": formalized.get("domain", "unknown")},
+        expected_outputs=(
+            "top_alternative_explanations",
+            "scores",
+            "verdict",
+            "verdict_justification",
+            "decisive_experiment",
+            "librarian_sanity_check",
+        ),
+    )
+
+    user_msg = f"""{task.render()}
+
+CORE HYPOTHESIS:
 {formalized['core_hypothesis']}
 
 DOMAIN: {formalized.get('domain', 'unknown')}
@@ -140,7 +153,7 @@ def _format_completed_analysis(methods_used: list[str], completed: list[dict], a
     else:
         lines.append("  (not explicitly listed)")
 
-    lines.append("\nCOMPLETED ANALYSIS — reported findings (critique these):")
+    lines.append("\nCOMPLETED ANALYSIS - reported findings (critique these):")
     for i, f in enumerate(completed, 1):
         lines.append(
             f"  {i}. {f.get('finding', '')}"
@@ -165,7 +178,7 @@ def _format_completed_analysis(methods_used: list[str], completed: list[dict], a
 
 def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
     if not analyst_result or analyst_result.get("skipped"):
-        return "\nGENOMIC EVIDENCE: Not available — score genomic_evidence_alignment as 5 (neutral)."
+        return "\nGENOMIC EVIDENCE: Not available - score genomic_evidence_alignment as 5 (neutral)."
 
     interp = analyst_result.get("interpretation", {})
     set_a_stats = analyst_result.get("set_a_stats") or {}

@@ -1,66 +1,76 @@
-"""Interpreter agent (v6).
-
-Reads typed Compute results + raw per-gene genomic data + (optional) robustness
-output + (optional) reproducibility check, and produces a calibrated
-interpretation. Cannot invent numbers — every claim about a value must trace to
-one of the inputs.
-"""
 from statistics import mean
+
 from ..tools.llm_client import llm_call_json
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
 
-INTERPRETER_SYSTEM = """You are the Interpreter. You read structured outputs from a deterministic
-Compute layer (statistical test results with effect sizes, p-values, multiple-testing corrections),
-together with raw per-gene genomic data and the original hypothesis, and produce a calibrated
-interpretation.
+INTERPRETER_SPEC = AgentSpec(
+    name="interpreter",
+    mission="Translate typed compute results and genomic measurements into a calibrated narrative without inventing numbers.",
+    capabilities=(
+        "Summarize observed genomic patterns from the compute layer and raw gene data.",
+        "Flag outlier genes and regulatory overlap.",
+        "Cross-reference reproducibility data when present.",
+    ),
+    behavioral_constraints=(
+        "Do not invent numbers.",
+        "Do not override typed compute results.",
+        "Return JSON only.",
+    ),
+    verification_rules=(
+        "Every numeric claim must trace back to the inputs.",
+        "If reproducibility data is present, report what is and is not checkable here.",
+    ),
+    output_contract=OutputContract(
+        summary="Calibrated genomic interpretation.",
+        fields=(
+            OutputField("patterns_observed", "Observed patterns with support polarity and evidence."),
+            OutputField("outlier_genes", "Genes that stand out and why."),
+            OutputField("regulatory_overlap", "Shared TF motifs, Jaccard index, and interpretation."),
+            OutputField("reproducibility_check", "Cross-reference of reported findings against Ensembl values.", required=False),
+            OutputField("limitations", "Explicit limitations of the analysis."),
+            OutputField("overall_genomic_assessment", "supports, neutral, contradicts, or inconclusive."),
+            OutputField("assessment_justification", "Short justification for the overall assessment."),
+        ),
+    ),
+)
 
-You CANNOT invent numbers. Every claim about a number must trace to a value in the inputs.
+INTERPRETER_SYSTEM = f"""{INTERPRETER_SPEC.render_system_prompt()}
 
-You must:
-1. Describe the genomic patterns observed (what the tests + raw data actually show).
-2. Interpret what these patterns suggest about the hypothesis (supporting / neutral / contradicting).
-3. Be explicit about LIMITATIONS — dN/dS is pairwise human-vs-X (not branch-specific);
-   regulatory overlap is Jaccard-style (not statistically normalized); the tool is observational,
-   not a phylogenetic comparative method.
-4. Flag specific outlier genes if any single gene is doing the work.
-5. If REPRODUCIBILITY_CHECK is non-empty, report which reported findings the tool can or cannot
-   independently verify here. Be HONEST about what is not reconstructable from Ensembl alone.
+You read structured outputs from a deterministic Compute layer (statistical test results with
+effect sizes, p-values, multiple-testing corrections), together with raw per-gene genomic data
+and the original hypothesis.
 
-Respond with ONLY valid JSON:
-{
-  "patterns_observed": [
-    {"pattern": "...", "supports_hypothesis": "yes|no|neutral", "evidence": "specific numbers"}
-  ],
-  "outlier_genes": [
-    {"gene": "...", "why_notable": "...", "implication": "..."}
-  ],
-  "regulatory_overlap": {
-    "shared_tf_motifs": ["..."],
-    "jaccard_index": 0.0,
-    "interpretation": "..."
-  },
-  "reproducibility_check": [
-    {"reported": "...", "ensembl_value": "... or 'n/a'", "verifiable": true,
-     "note": "agrees / disagrees / not checkable here because ..."}
-  ],
-  "limitations": ["..."],
-  "overall_genomic_assessment": "supports|neutral|contradicts|inconclusive",
-  "assessment_justification": "2-3 sentences"
-}
-(Omit reproducibility_check — or return [] — when no REPRODUCIBILITY_CHECK section is given.)"""
+You cannot invent numbers. Every claim about a number must trace to a value in the inputs.
+
+Limitations to state explicitly:
+- dN/dS is pairwise human-vs-X, not branch-specific.
+- Regulatory overlap is Jaccard-style and not statistically normalized.
+- The tool is observational, not a phylogenetic comparative method.
+
+Omit reproducibility_check - or return [] - when no reproducibility section is present."""
 
 
-def run_interpreter(formalized: dict, expansion: dict, compute_results: dict,
-                    gene_data: dict, robustness: dict | None = None,
-                    reproducibility: dict | None = None) -> dict:
-    user = _build_user_prompt(formalized, expansion, compute_results, gene_data,
-                              robustness, reproducibility)
+def run_interpreter(
+    formalized: dict,
+    expansion: dict,
+    compute_results: dict,
+    gene_data: dict,
+    robustness: dict | None = None,
+    reproducibility: dict | None = None,
+) -> dict:
+    user = _build_user_prompt(formalized, expansion, compute_results, gene_data, robustness, reproducibility)
     return llm_call_json("interpreter", INTERPRETER_SYSTEM, user, max_tokens=3500)
 
 
-def _build_user_prompt(formalized: dict, expansion: dict, compute_results: dict,
-                       gene_data: dict, robustness: dict | None,
-                       reproducibility: dict | None) -> str:
+def _build_user_prompt(
+    formalized: dict,
+    expansion: dict,
+    compute_results: dict,
+    gene_data: dict,
+    robustness: dict | None,
+    reproducibility: dict | None,
+) -> str:
     tests = compute_results.get("tests") or []
     test_lines = []
     for t in tests:
@@ -71,8 +81,7 @@ def _build_user_prompt(formalized: dict, expansion: dict, compute_results: dict,
             )
             continue
         bits = [t.get("test", "?")]
-        for k in ("statistic", "p_value", "p_value_adjusted", "effect_size", "ci",
-                  "significant", "significant_adjusted"):
+        for k in ("statistic", "p_value", "p_value_adjusted", "effect_size", "ci", "significant", "significant_adjusted"):
             if k in t and t[k] is not None:
                 bits.append(f"{k}={t[k]}")
         line = "  - " + ", ".join(bits)
@@ -82,9 +91,7 @@ def _build_user_prompt(formalized: dict, expansion: dict, compute_results: dict,
 
     corr_lines = []
     for c in compute_results.get("corrections_applied") or []:
-        corr_lines.append(
-            f"  - {c.get('method')} (n_tests={c.get('n_tests')}, alpha={c.get('alpha')})"
-        )
+        corr_lines.append(f"  - {c.get('method')} (n_tests={c.get('n_tests')}, alpha={c.get('alpha')})")
 
     rb_block = ""
     if robustness and robustness.get("applicable"):
@@ -123,8 +130,7 @@ def _build_user_prompt(formalized: dict, expansion: dict, compute_results: dict,
         paralogs = d.get("paralogs") or []
         tree = d.get("gene_tree") or {}
         reg = d.get("regulatory_features") or []
-        dnds_vals = [o["dnds"] for o in orthologs
-                     if o.get("dnds") is not None and o["dnds"] < 10]
+        dnds_vals = [o["dnds"] for o in orthologs if o.get("dnds") is not None and o["dnds"] < 10]
         dnds_mean = f"{mean(dnds_vals):.3f}" if dnds_vals else "n/a"
         per_gene_lines.append(
             f"  {g}: orthologs={len(orthologs)}, paralogs={len(paralogs)}, "
@@ -132,12 +138,26 @@ def _build_user_prompt(formalized: dict, expansion: dict, compute_results: dict,
             f"regulatory_features={len(reg)}, mean_dN/dS={dnds_mean}"
         )
 
-    return f"""HYPOTHESIS: {formalized.get('core_hypothesis', '')}
+    task = TaskObject(
+        title="Interpret typed compute results",
+        semantic_inputs={"hypothesis": formalized.get("core_hypothesis", "")},
+        entities=tuple(expansion.get("starter") or []),
+        contextual_state={
+            "expanded_sets": list((expansion.get("expanded") or {}).keys()),
+            "control_sets": list((expansion.get("controls") or {}).keys()),
+        },
+        expected_outputs=(
+            "patterns_observed",
+            "outlier_genes",
+            "regulatory_overlap",
+            "reproducibility_check",
+            "limitations",
+            "overall_genomic_assessment",
+            "assessment_justification",
+        ),
+    )
 
-GENE-SET CONTEXT:
-  starter ({expansion.get('starter_count', 0)}): {', '.join(expansion.get('starter') or [])}
-  expanded sets: {list((expansion.get('expanded') or {}).keys())}
-  control sets: {list((expansion.get('controls') or {}).keys())}
+    return f"""{task.render()}
 
 DETERMINISTIC COMPUTE RESULTS (typed; you cannot invent or override these):
 tests:

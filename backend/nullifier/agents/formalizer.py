@@ -1,98 +1,135 @@
 import sys
+
 from ..tools.llm_client import llm_call_json
-
-STAGE1_SYSTEM = """You are a scientific hypothesis extractor. You receive a research
-proposal, memo, or write-up that may be at ANY stage: a fresh idea, a mid-flight
-analysis, or a completed study with results. Separate the FALSIFIABLE CORE from
-the SCAFFOLDING, and — if present — capture what the author has ALREADY DONE.
-
-The falsifiable core is the specific empirical claim (1-3 sentences, "we hypothesize that...").
-
-Scaffolding includes:
-- Prior literature already cited (extract titles)
-- Proposed methods — analyses the author PLANS to run (NOT claims to falsify)
-- Starter datasets (gene lists, preliminary data)
-- Sub-questions and exploratory goals
-
-Already-done work (OPTIONAL — only if the text actually reports it):
-- methods_used — analyses the author has ALREADY run (tests, datasets, pipelines)
-- completed_analysis — concrete findings already obtained: each item is a result with
-  its statistic / test / sample size / and the author's interpretation. Extract the
-  numbers verbatim where given. If the text contains no completed results, return [].
-
-Do NOT treat methods or literature review as claims. ONLY the core hypothesis gets falsified.
-Do NOT invent methods_used or completed_analysis — leave them empty unless the text states them.
-
-Respond with ONLY valid JSON:
-{
-  "core_hypothesis": "one concise paragraph",
-  "cited_literature": [
-    {"title_or_description": "...", "user_stated_relevance": "..."}
-  ],
-  "proposed_methods": ["method 1", ...],
-  "methods_used": ["analysis the author already ran", ...],
-  "completed_analysis": [
-    {"finding": "...", "statistic": "e.g. r=0.62, p=0.04", "test": "e.g. Spearman correlation",
-     "sample_size": "e.g. n=4 species", "interpretation": "what the author concluded"}
-  ],
-  "starter_data": "brief description",
-  "starter_entities": ["SYP", "MFSD2A", ...],
-  "domain": "biology|neuroscience|economics|physics|...",
-  "key_entities": ["entity A", "entity B", ...]
-}"""
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
 
-STAGE2_SYSTEM = """You are a scientific hypothesis formalizer. Decompose the core 
-hypothesis into ATOMIC CLAIMS — minimal testable predictions.
+FORMALIZER_STAGE1_SPEC = AgentSpec(
+    name="scientific hypothesis extractor",
+    mission="Separate the falsifiable core from scaffolding and capture any already-completed analysis without inventing details.",
+    capabilities=(
+        "Extract a concise core hypothesis from a proposal, memo, or write-up.",
+        "Separate cited literature, proposed methods, starter data, and exploratory goals from the falsifiable claim.",
+        "Detect methods_used and completed_analysis only when the text actually reports them.",
+        "Preserve verbatim numbers when the source provides them.",
+    ),
+    behavioral_constraints=(
+        "Do not treat methods or literature review as claims.",
+        "Do not invent methods_used or completed_analysis.",
+        "Only the core hypothesis is falsified.",
+        "Return JSON only.",
+    ),
+    guarantees=(
+        "The output preserves the author's reported analysis state when it exists.",
+        "Scaffolding stays separate from the hypothesis under test.",
+    ),
+    verification_rules=(
+        "If completed results are absent, return an empty list.",
+        "If a number is present in the input, copy it verbatim where possible.",
+    ),
+    output_contract=OutputContract(
+        summary="Structured stage-1 extraction output.",
+        fields=(
+            OutputField("core_hypothesis", "One concise paragraph describing the empirical claim."),
+            OutputField("cited_literature", "List of user-cited references with relevance notes."),
+            OutputField("proposed_methods", "Methods the author plans to run."),
+            OutputField("methods_used", "Methods the author already ran."),
+            OutputField("completed_analysis", "Completed findings with statistic, test, sample size, and interpretation."),
+            OutputField("starter_data", "Brief description of any starter data."),
+            OutputField("starter_entities", "Starter gene or entity list."),
+            OutputField("domain", "Declared domain label."),
+            OutputField("key_entities", "Key entities surfaced from the text."),
+        ),
+        notes=("Treat this as semantic extraction, not creative writing.",),
+    ),
+)
 
-For each atomic claim specify: entity_a, entity_b, relationship, context, mechanism, 
-null_hypothesis, testability.
-
-Respond with ONLY valid JSON:
-{
-  "atomic_claims": [
-    {
-      "id": "C1",
-      "statement": "one-sentence plain-English version",
-      "entity_a": "...",
-      "entity_b": "...",
-      "relationship": "...",
-      "context": "...",
-      "mechanism": "...",
-      "null_hypothesis": "...",
-      "testability": "..."
-    }
-  ],
-  "key_search_terms": ["term1", "term2", ...]
-}"""
+FORMALIZER_STAGE2_SPEC = AgentSpec(
+    name="scientific hypothesis formalizer",
+    mission="Decompose the core hypothesis into atomic claims that can be tested independently.",
+    capabilities=(
+        "Turn the core hypothesis into minimal testable predictions.",
+        "Assign each claim a plain-English statement, entities, relationship, context, mechanism, null hypothesis, and testability.",
+    ),
+    behavioral_constraints=(
+        "Do not broaden the hypothesis beyond the text.",
+        "Do not omit null hypotheses.",
+        "Return JSON only.",
+    ),
+    verification_rules=(
+        "Each atomic claim should be minimal and independently testable.",
+        "Key search terms should support later literature retrieval.",
+    ),
+    output_contract=OutputContract(
+        summary="Structured atomic-claim decomposition.",
+        fields=(
+            OutputField("atomic_claims", "List of minimal testable predictions."),
+            OutputField("key_search_terms", "Search terms for literature retrieval."),
+        ),
+    ),
+)
 
 
 BIOLOGY_DOMAINS = {"biology", "neuroscience", "genomics", "molecular_biology", "neurobiology"}
 
 
 def formalize_stage1(raw_text: str) -> dict:
-    return llm_call_json("formalizer_stage1", STAGE1_SYSTEM, raw_text, max_tokens=2000)
+    task = TaskObject(
+        title="Stage 1 hypothesis extraction",
+        semantic_inputs={"raw_text": raw_text},
+        expected_outputs=(
+            "core_hypothesis",
+            "cited_literature",
+            "proposed_methods",
+            "methods_used",
+            "completed_analysis",
+            "starter_data",
+            "starter_entities",
+            "domain",
+            "key_entities",
+        ),
+    )
+    return llm_call_json(
+        "formalizer_stage1",
+        FORMALIZER_STAGE1_SPEC.render_system_prompt(),
+        task.render(),
+        max_tokens=2000,
+    )
 
 
 def formalize_stage2(stage1: dict) -> dict:
-    stage2_input = (
-        f"Core hypothesis: {stage1['core_hypothesis']}\n\n"
-        f"Key entities: {', '.join(stage1.get('key_entities', []))}\n"
-        f"Starter entities: {', '.join(stage1.get('starter_entities', []))}"
+    task = TaskObject(
+        title="Stage 2 atomic-claim decomposition",
+        semantic_inputs={"core_hypothesis": stage1["core_hypothesis"]},
+        entities=tuple(stage1.get("key_entities", []) or []) + tuple(stage1.get("starter_entities", []) or []),
+        contextual_state={
+            "core_hypothesis": stage1.get("core_hypothesis", ""),
+            "key_entities": ", ".join(stage1.get("key_entities", [])),
+            "starter_entities": ", ".join(stage1.get("starter_entities", [])),
+        },
+        expected_outputs=("atomic_claims", "key_search_terms"),
     )
-    return llm_call_json("formalizer_stage2", STAGE2_SYSTEM, stage2_input, max_tokens=2000)
+    return llm_call_json(
+        "formalizer_stage2",
+        FORMALIZER_STAGE2_SPEC.render_system_prompt(),
+        task.render(),
+        max_tokens=2000,
+    )
 
 
 def formalize(raw_input: str, interactive: bool = True) -> dict:
     stage1 = formalize_stage1(raw_input)
 
-    # Domain check — biology-first warning
     domain = stage1.get("domain", "unknown").lower()
     if domain not in BIOLOGY_DOMAINS:
-        print(f"\n⚠ Warning: detected domain '{domain}'. Nullifier is biology-specialized.",
-              file=sys.stderr)
-        print("  Literature analysis will run; genomic analysis requires starter entities.\n",
-              file=sys.stderr)
+        print(
+            f"\n⚠ Warning: detected domain '{domain}'. Nullifier is biology-specialized.",
+            file=sys.stderr,
+        )
+        print(
+            "  Literature analysis will run; genomic analysis requires starter entities.\n",
+            file=sys.stderr,
+        )
 
     if interactive:
         stage1 = _confirmation_gate(stage1)
@@ -118,10 +155,10 @@ def _confirmation_gate(stage1: dict) -> dict:
         choice = input("Proceed with this hypothesis? [y]es / [e]dit / [a]bort: ").strip().lower()
         if choice in ("y", "yes", ""):
             return stage1
-        elif choice in ("a", "abort"):
+        if choice in ("a", "abort"):
             print("Aborted.", file=sys.stderr)
             sys.exit(0)
-        elif choice in ("e", "edit"):
+        if choice in ("e", "edit"):
             print("\nEnter the corrected core hypothesis (end with a blank line):")
             lines = []
             while True:
