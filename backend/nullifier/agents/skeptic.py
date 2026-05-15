@@ -1,5 +1,5 @@
 from ..tools.llm_client import llm_call_json
-from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject, normalize_cited_reference
 
 
 SKEPTIC_SPEC = AgentSpec(
@@ -130,6 +130,8 @@ def stress_test(formalized: dict, evidence: dict, analyst_result: dict | None = 
         ),
     )
 
+    cited_refs = [normalize_cited_reference(r.get("user_reference", r)) for r in evidence.get("cited_literature_validated", [])]
+
     user_msg = f"""{task.render()}
 
 CORE HYPOTHESIS:
@@ -138,7 +140,7 @@ CORE HYPOTHESIS:
 DOMAIN: {formalized.get('domain', 'unknown')}
 
 USER-CITED LITERATURE:
-{chr(10).join(f"- {r['user_reference']['title_or_description']}" for r in evidence['cited_literature_validated'])}
+{chr(10).join(f"- {r['title_or_description']}" for r in cited_refs)}
 
 CLAIMS + EVIDENCE + TOP ABSTRACTS:
 {chr(10).join(claims_and_evidence)}

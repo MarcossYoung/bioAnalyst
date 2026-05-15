@@ -14,6 +14,29 @@ def _kv_lines(items: Mapping[str, Any]) -> str:
     return "\n".join(f"  - {key}: {value}" for key, value in items.items())
 
 
+def normalize_cited_reference(ref: Any) -> dict[str, Any]:
+    """Return a reference dict with a canonical citation title field.
+
+    Accepts the common variants we have seen in prompts and persisted runs:
+    - title_or_description
+    - title
+    - description
+    - title_or_decription (typo)
+    """
+    if not isinstance(ref, dict):
+        return {"title_or_description": str(ref)}
+    title = (
+        ref.get("title_or_description")
+        or ref.get("title_or_decription")
+        or ref.get("title")
+        or ref.get("description")
+        or ref.get("paper_title")
+        or ref.get("value")
+        or ""
+    )
+    return {**ref, "title_or_description": title}
+
+
 @dataclass(frozen=True)
 class OutputField:
     name: str

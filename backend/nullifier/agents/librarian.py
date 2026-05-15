@@ -6,7 +6,7 @@ from ..tools.literature import federated_search, find_by_title, SourceHealth
 from ..tools.query_expander import expand_queries
 from ..tools.flag_store import get_relevant_flags, format_flags_for_prompt
 from .. import events as ev
-from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject, normalize_cited_reference
 
 
 _PER_CLAIM_SEARCH_BUDGET = 45.0
@@ -83,7 +83,7 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
 
     health = SourceHealth()
 
-    cited_refs = formalized.get("cited_literature", [])
+    cited_refs = [normalize_cited_reference(ref) for ref in (formalized.get("cited_literature", []) or [])]
     cited_validated = []
     if cited_refs:
         with ThreadPoolExecutor(max_workers=min(len(cited_refs), 2)) as ex:
