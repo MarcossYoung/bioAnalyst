@@ -22,13 +22,43 @@ Respond with ONLY valid JSON:
 
 def expand_queries(claim: dict, starter_entities: list[str] = None) -> list[dict]:
     starter_entities = starter_entities or []
+    entity_a = (
+        claim.get("entity_a")
+        or claim.get("subject")
+        or claim.get("entity")
+        or _first_entity(claim.get("entities"))
+        or claim.get("statement", "")
+    )
+    entity_b = (
+        claim.get("entity_b")
+        or claim.get("object")
+        or claim.get("target")
+        or _second_entity(claim.get("entities"))
+        or claim.get("null_hypothesis", "")
+    )
     user = f"""Claim: {claim['statement']}
 Null hypothesis: {claim['null_hypothesis']}
-Entity A: {claim['entity_a']}
-Entity B: {claim['entity_b']}
+Entity A: {entity_a}
+Entity B: {entity_b}
 Context: {claim.get('context', '')}
 Mechanism: {claim.get('mechanism', '')}
 Starter entities to anchor queries: {', '.join(starter_entities[:20])}
 """
     result = llm_call_json("query_expander", QUERY_EXPANDER_SYSTEM, user, max_tokens=1000)
     return result.get("queries", [])
+
+
+def _first_entity(value) -> str:
+    if isinstance(value, (list, tuple)) and value:
+        first = value[0]
+        return str(first).strip() if first is not None else ""
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _second_entity(value) -> str:
+    if isinstance(value, (list, tuple)) and len(value) > 1:
+        second = value[1]
+        return str(second).strip() if second is not None else ""
+    return ""

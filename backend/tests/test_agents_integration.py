@@ -1,6 +1,7 @@
 """Smoke tests for agent/data handoff guards."""
 
 from nullifier.agents import formalizer, librarian
+from nullifier.tools.query_expander import expand_queries
 
 
 def test_formalizer_stage1_normalizes_field_shapes(monkeypatch):
@@ -115,3 +116,21 @@ def test_librarian_preserves_paper_alignment_when_batch_is_short(monkeypatch):
     assert len(claim["retrieved_papers"]) == 2
     assert len(claim["classifications"]) == 1
     assert len(claim["failed_classifications"]) == 1
+
+
+def test_query_expander_accepts_new_claim_shape(monkeypatch):
+    monkeypatch.setattr(
+        "nullifier.tools.query_expander.llm_call_json",
+        lambda *args, **kwargs: {"queries": [{"query": "test", "intent": "direct"}]},
+    )
+
+    out = expand_queries(
+        {
+            "statement": "GENE1 affects outcome",
+            "null_hypothesis": "GENE1 does not affect outcome",
+            "entities": ["GENE1", "OUTCOME"],
+        },
+        starter_entities=["GENE1"],
+    )
+
+    assert out == [{"query": "test", "intent": "direct"}]

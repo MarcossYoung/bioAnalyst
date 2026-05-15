@@ -154,15 +154,15 @@ def _build_confirm_callback(console):
             tag = " [yellow](detected)[/yellow]" if s["detected"] else ""
             console.print(f"\n[bold cyan]{s['label']}[/bold cyan]{tag}")
             console.print(_render_value(s["kind"], s["value"]))
-            opts = "[k]eep / [e]dit" + (" / [r]emove" if s["removable"] else "")
+            opts = "keep / edit" + (" / remove" if s["removable"] else "")
             while True:
-                choice = input(f"  {s['label']}: {opts} [k]: ").strip().lower()
-                if choice in ("k", ""):
+                choice = input(f"  {s['label']} ({opts}): ").strip().lower()
+                if choice in ("", "keep"):
                     break
-                if choice == "r" and s["removable"]:
+                if choice == "remove" and s["removable"]:
                     edits[s["id"]] = {"action": "remove"}
                     break
-                if choice == "e":
+                if choice == "edit":
                     if s["kind"] == "text":
                         lines = _read_multiline("  Enter new text (blank line to end):")
                         if lines:
@@ -185,6 +185,7 @@ def _build_confirm_callback(console):
                             })
                         edits[s["id"]] = {"action": "edit", "value": findings}
                     break
+                console.print("[dim]Type keep, edit, or remove.[/dim]")
 
         final = input("\nProceed? [y]es / [a]bort [y]: ").strip().lower()
         if final in ("a", "abort"):
