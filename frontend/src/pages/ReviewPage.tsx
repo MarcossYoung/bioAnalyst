@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getRun, createFlag } from '../lib/api'
 import { CLASS_STYLE, CLASSIFICATION_OPTIONS } from '../lib/utils'
@@ -65,15 +65,22 @@ export function ReviewPage() {
     entities: [...((formalized?.key_entities as string[]) ?? []), ...((formalized?.starter_entities as string[]) ?? [])],
   }), [formalized])
 
-  const next = useCallback(() => { setFormOpen(false); setIdx((i) => Math.min(i + 1, items.length - 1)) }, [items.length])
-  const prev = useCallback(() => { setFormOpen(false); setIdx((i) => Math.max(i - 1, 0)) }, [])
+  function next() {
+    setFormOpen(false)
+    setIdx((i) => Math.min(i + 1, items.length - 1))
+  }
 
-  const openForm = useCallback(() => {
+  function prev() {
+    setFormOpen(false)
+    setIdx((i) => Math.max(i - 1, 0))
+  }
+
+  function openForm() {
     if (!current) return
     setCorrect(CLASSIFICATION_OPTIONS.find((o) => o !== current.cls.classification) ?? 'tangential')
     setReason('')
     setFormOpen(true)
-  }, [current])
+  }
 
   async function save() {
     if (!current) return
@@ -100,23 +107,6 @@ export function ReviewPage() {
     }
   }
 
-  // keyboard
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') return
-      if (e.key === 'j') { e.preventDefault(); next() }
-      else if (e.key === 'k') { e.preventDefault(); prev() }
-      else if (e.key === 'f' || e.key === 'c') {
-        e.preventDefault()
-        if (formOpen) setFormOpen(false)
-        else openForm()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [next, prev, openForm, formOpen])
-
   const classCss = current ? (CLASS_STYLE[current.cls.classification] ?? CLASS_STYLE['tangential']) : ''
 
   return (
@@ -131,7 +121,7 @@ export function ReviewPage() {
           <span style={{ fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '12px', color: '#94a3b8' }}>run/{runId}</span>
         </div>
         <span style={{ fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '11px', color: '#64748b' }}>
-          {items.length ? `${idx + 1} / ${items.length}` : ''} · {flagged.size} flagged · j/k navigate · f flag
+          {items.length ? `${idx + 1} / ${items.length}` : ''} · {flagged.size} flagged
         </span>
       </header>
 
@@ -180,9 +170,9 @@ export function ReviewPage() {
             )}
 
             <div style={{ display: 'flex', gap: '8px', marginTop: '20px', borderTop: '1px solid var(--border-light)', paddingTop: '14px' }}>
-              <button onClick={prev} disabled={idx === 0} style={navBtn(idx === 0)}>← prev (k)</button>
-              {!formOpen && <button onClick={openForm} style={navBtn(false)}>⚑ flag (f)</button>}
-              <button onClick={next} disabled={idx >= items.length - 1} style={navBtn(idx >= items.length - 1)}>keep & next (j) →</button>
+              <button onClick={prev} disabled={idx === 0} style={navBtn(idx === 0)}>← prev</button>
+              {!formOpen && <button onClick={openForm} style={navBtn(false)}>⚑ flag</button>}
+              <button onClick={next} disabled={idx >= items.length - 1} style={navBtn(idx >= items.length - 1)}>keep & next →</button>
             </div>
           </div>
         )}

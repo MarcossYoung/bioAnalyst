@@ -37,6 +37,59 @@ def normalize_cited_reference(ref: Any) -> dict[str, Any]:
     return {**ref, "title_or_description": title}
 
 
+def normalize_atomic_claim(claim: Any, index: int | None = None) -> dict[str, Any]:
+    """Return a canonical atomic-claim dict.
+
+    Accepts both the current structured claim objects and older string-ish shapes
+    so downstream stages can keep working while we transition schemas.
+    """
+    claim_id = f"claim_{(index + 1) if index is not None else 1}"
+    if isinstance(claim, dict):
+        statement = (
+            claim.get("statement")
+            or claim.get("claim")
+            or claim.get("text")
+            or claim.get("value")
+            or ""
+        )
+        null_hypothesis = (
+            claim.get("null_hypothesis")
+            or claim.get("h0")
+            or claim.get("null")
+            or (f"Not: {statement}" if statement else "")
+        )
+        entities = claim.get("entities")
+        if not isinstance(entities, (list, tuple)):
+            entities = []
+        context = claim.get("context", "")
+        mechanism = claim.get("mechanism", "")
+        return {
+            **claim,
+            "id": str(claim.get("id") or claim_id),
+            "statement": str(statement).strip(),
+            "null_hypothesis": str(null_hypothesis).strip(),
+            "entities": [str(e).strip() for e in entities if str(e).strip()],
+            "context": str(context).strip(),
+            "mechanism": str(mechanism).strip(),
+        }
+
+    statement = str(claim).strip()
+    return {
+        "id": claim_id,
+        "statement": statement,
+        "null_hypothesis": f"Not: {statement}" if statement else "",
+        "entities": [],
+        "context": "",
+        "mechanism": "",
+    }
+
+
+def normalize_atomic_claims(claims: Any) -> list[dict[str, Any]]:
+    if not isinstance(claims, list):
+        return []
+    return [normalize_atomic_claim(claim, idx) for idx, claim in enumerate(claims)]
+
+
 @dataclass(frozen=True)
 class OutputField:
     name: str

@@ -1,5 +1,12 @@
 from ..tools.llm_client import llm_call_json
-from .semantic import AgentSpec, OutputContract, OutputField, TaskObject, normalize_cited_reference
+from .semantic import (
+    AgentSpec,
+    OutputContract,
+    OutputField,
+    TaskObject,
+    normalize_atomic_claim,
+    normalize_cited_reference,
+)
 
 
 SKEPTIC_SPEC = AgentSpec(
@@ -89,7 +96,8 @@ If the completed analysis has high-severity methodological or statistical proble
 
 def stress_test(formalized: dict, evidence: dict, analyst_result: dict | None = None) -> dict:
     claims_and_evidence = []
-    for claim in formalized["atomic_claims"]:
+    for idx, raw_claim in enumerate(formalized.get("atomic_claims", []) or []):
+        claim = normalize_atomic_claim(raw_claim, idx)
         cid = claim["id"]
         assessment = evidence["claim_evidence"].get(cid, {})
 

@@ -1,4 +1,5 @@
 from .llm_client import llm_call_json
+from ..agents.semantic import normalize_atomic_claim
 
 QUERY_EXPANDER_SYSTEM = """You are a scientific literature search expert. Given an atomic
 claim and context, generate 5-8 diverse query variants for literature databases.
@@ -22,6 +23,7 @@ Respond with ONLY valid JSON:
 
 def expand_queries(claim: dict, starter_entities: list[str] = None) -> list[dict]:
     starter_entities = starter_entities or []
+    claim = normalize_atomic_claim(claim)
     entity_a = (
         claim.get("entity_a")
         or claim.get("subject")

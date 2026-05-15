@@ -1,6 +1,7 @@
 """Smoke tests for agent/data handoff guards."""
 
 from nullifier.agents import formalizer, librarian
+from nullifier.agents.semantic import normalize_atomic_claim
 from nullifier.tools.query_expander import expand_queries
 
 
@@ -134,3 +135,10 @@ def test_query_expander_accepts_new_claim_shape(monkeypatch):
     )
 
     assert out == [{"query": "test", "intent": "direct"}]
+
+
+def test_normalize_atomic_claim_accepts_strings():
+    claim = normalize_atomic_claim("GENE1 affects outcome", 2)
+    assert claim["id"] == "claim_3"
+    assert claim["statement"] == "GENE1 affects outcome"
+    assert claim["null_hypothesis"] == "Not: GENE1 affects outcome"

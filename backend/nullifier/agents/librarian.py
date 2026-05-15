@@ -6,7 +6,14 @@ from ..tools.literature import federated_search, find_by_title, SourceHealth
 from ..tools.query_expander import expand_queries
 from ..tools.flag_store import get_relevant_flags, format_flags_for_prompt
 from .. import events as ev
-from .semantic import AgentSpec, OutputContract, OutputField, TaskObject, normalize_cited_reference
+from .semantic import (
+    AgentSpec,
+    OutputContract,
+    OutputField,
+    TaskObject,
+    normalize_atomic_claim,
+    normalize_cited_reference,
+)
 
 
 _PER_CLAIM_SEARCH_BUDGET = 45.0
@@ -103,7 +110,8 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
     api_status_acc = {}
     starter_entities = formalized.get("starter_entities", [])
 
-    for claim in formalized.get("atomic_claims", []):
+    for idx, raw_claim in enumerate(formalized.get("atomic_claims", []) or []):
+        claim = normalize_atomic_claim(raw_claim, idx)
         expanded = expand_queries(claim, starter_entities)
         if on_event:
             on_event(ev.queries_expanded(claim["id"], len(expanded)))
