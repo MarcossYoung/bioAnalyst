@@ -17,7 +17,7 @@ def review_report(json_path: str):
         title="[bold]Flag Review Mode[/bold]",
         border_style="cyan"
     ))
-    console.print("[dim]For each paper: [k]eep classification / [f]lag as wrong / [q]uit[/dim]\n")
+    console.print("[dim]For each paper: keep classification / flag as wrong / quit[/dim]\n")
 
     flagged_count = 0
     total_reviewed = 0
@@ -41,19 +41,19 @@ def review_report(json_path: str):
             ))
 
             while True:
-                choice = input("[k]eep / [f]lag / [q]uit: ").strip().lower()
-                if choice in ("k", ""):
+                choice = input("keep / flag / quit: ").strip().lower()
+                if choice in ("", "keep"):
                     break
-                elif choice == "q":
+                elif choice == "quit":
                     console.print(f"\n[bold]Review complete.[/bold] "
                                   f"Flagged {flagged_count} of {total_reviewed} reviewed.\n")
                     return
-                elif choice == "f":
+                elif choice == "flag":
                     _flag_paper(formalized, cls)
                     flagged_count += 1
                     break
                 else:
-                    console.print("[dim]Use k/f/q.[/dim]")
+                    console.print("[dim]Use keep/flag/quit.[/dim]")
 
     console.print(f"\n[bold]Review complete.[/bold] "
                   f"Flagged {flagged_count} of {total_reviewed} reviewed.")

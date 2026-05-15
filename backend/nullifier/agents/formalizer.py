@@ -248,13 +248,13 @@ def _confirmation_gate(stage1: dict) -> dict:
     print()
 
     while True:
-        choice = input("Proceed with this hypothesis? [y]es / [e]dit / [a]bort: ").strip().lower()
-        if choice in ("y", "yes", ""):
+        choice = input("Proceed with this hypothesis? yes / edit / abort: ").strip().lower()
+        if choice in ("", "yes"):
             return stage1
-        if choice in ("a", "abort"):
+        if choice in ("abort", "no"):
             print("Aborted.", file=sys.stderr)
             sys.exit(0)
-        if choice in ("e", "edit"):
+        if choice == "edit":
             print("\nEnter the corrected core hypothesis (end with a blank line):")
             lines = []
             while True:

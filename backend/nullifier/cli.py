@@ -154,13 +154,13 @@ def _build_confirm_callback(console):
             tag = " [yellow](detected)[/yellow]" if s["detected"] else ""
             console.print(f"\n[bold cyan]{s['label']}[/bold cyan]{tag}")
             console.print(_render_value(s["kind"], s["value"]))
-            opts = "keep / edit" + (" / remove" if s["removable"] else "")
             while True:
-                choice = input(f"  {s['label']} ({opts}): ").strip().lower()
+                choice = input(
+                    f"  {s['label']} (type keep"
+                    + (" / edit / remove" if s["removable"] else " / edit")
+                    + "): "
+                ).strip().lower()
                 if choice in ("", "keep"):
-                    break
-                if choice == "remove" and s["removable"]:
-                    edits[s["id"]] = {"action": "remove"}
                     break
                 if choice == "edit":
                     if s["kind"] == "text":
@@ -185,10 +185,13 @@ def _build_confirm_callback(console):
                             })
                         edits[s["id"]] = {"action": "edit", "value": findings}
                     break
-                console.print("[dim]Type keep, edit, or remove.[/dim]")
+                if choice == "remove" and s["removable"]:
+                    console.print("[dim]Removal is no longer available here; use keep or edit.[/dim]")
+                    continue
+                console.print("[dim]Type keep or edit.[/dim]")
 
-        final = input("\nProceed? [y]es / [a]bort [y]: ").strip().lower()
-        if final in ("a", "abort"):
+        final = input("\nProceed? yes / abort: ").strip().lower()
+        if final in ("abort", "no"):
             console.print("Aborted.", style="red")
             return None
         updated, changed = ev.apply_section_edits(stage1, edits)
