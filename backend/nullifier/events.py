@@ -197,7 +197,38 @@ def token_update(tracker) -> Event:
     })
 
 
+def _normalize_expansion(expansion: dict | None) -> dict | None:
+    """Add `expanded_sets` / `control_sets` arrays + totals derived from the raw
+    `expanded` / `controls` dicts so the UI sees the same shape from the streaming
+    `gene_sets_expanded` event and from `run_completed.analyst.expansion`.
+
+    Idempotent: a payload that already has the array keys is returned unchanged.
+    Preserves every other key on the input dict.
+    """
+    if not expansion:
+        return expansion
+    expanded = expansion.get("expanded") or {}
+    controls = expansion.get("controls") or {}
+    expanded_keys = list(expanded.keys()) if isinstance(expanded, dict) else []
+    control_keys = list(controls.keys()) if isinstance(controls, dict) else []
+    return {
+        **expansion,
+        "expanded_sets": expansion.get("expanded_sets") or expanded_keys,
+        "control_sets": expansion.get("control_sets") or control_keys,
+        "total_expanded": expansion.get(
+            "total_expanded",
+            sum(len(v) for v in expanded.values()) if isinstance(expanded, dict) else 0,
+        ),
+        "total_controls": expansion.get(
+            "total_controls",
+            sum(len(v) for v in controls.values()) if isinstance(controls, dict) else 0,
+        ),
+    }
+
+
 def run_completed(formalized: dict, evidence: dict, verdict: dict, analyst: dict | None) -> Event:
+    if analyst and isinstance(analyst.get("expansion"), dict):
+        analyst = {**analyst, "expansion": _normalize_expansion(analyst["expansion"])}
     return Event("run_completed", {
         "formalized": formalized,
         "evidence": evidence,

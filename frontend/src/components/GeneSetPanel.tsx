@@ -52,8 +52,8 @@ export function GeneSetPanel({ expansion }: GeneSetPanelProps) {
             Expanded canonical sets ({expansion.total_expanded} genes)
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-            {expansion.expanded_sets.length > 0
-              ? expansion.expanded_sets.map((s) => <Chip key={s} label={s} />)
+            {(expansion.expanded_sets?.length ?? 0) > 0
+              ? (expansion.expanded_sets ?? []).map((s) => <Chip key={s} label={s} />)
               : <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>none</span>
             }
           </div>
@@ -64,8 +64,8 @@ export function GeneSetPanel({ expansion }: GeneSetPanelProps) {
             Control sets ({expansion.total_controls} genes)
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-            {expansion.control_sets.length > 0
-              ? expansion.control_sets.map((s) => <Chip key={s} label={s} />)
+            {(expansion.control_sets?.length ?? 0) > 0
+              ? (expansion.control_sets ?? []).map((s) => <Chip key={s} label={s} />)
               : <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>none</span>
             }
           </div>
