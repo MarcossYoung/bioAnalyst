@@ -155,6 +155,10 @@ def analyst_gene_fetched(gene: str, status: str) -> Event:
     return Event("analyst_gene_fetched", {"gene": gene, "status": status})
 
 
+def analyst_symbol_resolved(retired: str, canonical: str) -> Event:
+    return Event("analyst_symbol_resolved", {"retired": retired, "canonical": canonical})
+
+
 def analyst_ready(assessment: str) -> Event:
     return Event("analyst_ready", {"overall_genomic_assessment": assessment})
 

@@ -130,6 +130,7 @@ def run_pipeline(
                     use_cache=True,
                     on_gene=lambda g, s: analyst_events.append(ev.analyst_gene_fetched(g, s)),
                     starter_genes=set(expansion.get("starter", [])),
+                    on_event=analyst_events.append,
                 )
                 for e in analyst_events:
                     yield e

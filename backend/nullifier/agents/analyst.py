@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from statistics import mean, stdev
 from ..tools.llm_client import llm_call_json
 from ..tools import ensembl
+from .. import events as ev
 
 
 ANALYST_SYSTEM = """You are a genomic data analyst. You receive structured genomic data 
@@ -51,10 +52,11 @@ Respond with ONLY valid JSON:
 (Omit "reproducibility_check" — or return [] — when no REPRODUCIBILITY DATA section is given.)"""
 
 
-def run_analyst(formalized: dict, use_cache: bool = True, on_gene=None) -> dict:
+def run_analyst(formalized: dict, use_cache: bool = True, on_gene=None, on_event=None) -> dict:
     """Pull Ensembl data for starter entities, compute stats, send to Claude for interpretation.
 
     on_gene(gene: str, status: "ok"|"error") called after each Ensembl fetch (from worker threads).
+    on_event(Event) is invoked for typed events (e.g. analyst_symbol_resolved).
     """
     starter = formalized.get("starter_entities", [])
     if not starter:
@@ -62,7 +64,7 @@ def run_analyst(formalized: dict, use_cache: bool = True, on_gene=None) -> dict:
 
     set_a, set_b = _split_into_sets(formalized, starter)
 
-    gene_data = _fetch_all_gene_data(starter, use_cache, on_gene=on_gene)
+    gene_data = _fetch_all_gene_data(starter, use_cache, on_gene=on_gene, on_event=on_event)
 
     # Compute aggregate statistics per set
     set_a_stats = _set_statistics(set_a, gene_data) if set_a else None
@@ -160,7 +162,8 @@ Genes to classify: {', '.join(starter)}
 
 
 def _fetch_all_gene_data(genes: list[str], use_cache: bool, on_gene=None,
-                         starter_genes: set[str] | None = None) -> dict:
+                         starter_genes: set[str] | None = None,
+                         on_event=None) -> dict:
     """Fetch Ensembl data for a gene list using a tiered strategy.
 
     Starter genes get a full 6-call fetch. Expanded/control genes get a light
@@ -175,9 +178,13 @@ def _fetch_all_gene_data(genes: list[str], use_cache: bool, on_gene=None,
             if on_gene:
                 on_gene(g, "error")
             return g, {"_error": "not found in Ensembl"}
-        orthologs = ensembl.get_orthologs(g, use_cache=use_cache)
-        paralogs = ensembl.get_paralogs(g, use_cache=use_cache)
-        tree = ensembl.get_gene_tree(g, use_cache=use_cache)
+        resolved_from = info.get("_resolved_from")
+        if resolved_from and on_event:
+            on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
+        canonical = info["symbol"]
+        orthologs = ensembl.get_orthologs(canonical, use_cache=use_cache)
+        paralogs = ensembl.get_paralogs(canonical, use_cache=use_cache)
+        tree = ensembl.get_gene_tree(canonical, use_cache=use_cache)
         reg = []
         motifs = []
         if info.get("chromosome") and info.get("start") and info.get("end"):
@@ -191,6 +198,7 @@ def _fetch_all_gene_data(genes: list[str], use_cache: bool, on_gene=None,
             on_gene(g, "ok")
         return g, {
             "info": info,
+            "resolved_from": resolved_from,
             "orthologs": orthologs,
             "paralogs": paralogs,
             "gene_tree": tree,
@@ -205,11 +213,16 @@ def _fetch_all_gene_data(genes: list[str], use_cache: bool, on_gene=None,
             if on_gene:
                 on_gene(g, "error")
             return g, {"_error": "not found in Ensembl"}
-        orthologs = ensembl.get_orthologs(g, use_cache=use_cache)
+        resolved_from = info.get("_resolved_from")
+        if resolved_from and on_event:
+            on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
+        canonical = info["symbol"]
+        orthologs = ensembl.get_orthologs(canonical, use_cache=use_cache)
         if on_gene:
             on_gene(g, "ok")
         return g, {
             "info": info,
+            "resolved_from": resolved_from,
             "orthologs": orthologs,
             "paralogs": [],
             "gene_tree": None,

@@ -1,11 +1,16 @@
 import requests
 import sqlite3
 import json
+import sys
 import time
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from ..config.loader import load_config
+
+HGNC_BASE = "https://rest.genenames.org"
+_HGNC_HEADERS = {"Accept": "application/json"}
+ALIAS_NOT_FOUND = "__none__"  # sentinel cached when HGNC has no canonical mapping
 
 _cfg = None
 _lock = threading.Lock()
@@ -44,8 +49,66 @@ def _init_cache() -> sqlite3.Connection:
             cached_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS aliases (
+            retired TEXT PRIMARY KEY,
+            canonical TEXT NOT NULL,
+            cached_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     return conn
+
+
+def _alias_get(retired: str) -> str | None:
+    """Returns canonical symbol, ALIAS_NOT_FOUND sentinel for negative cache, or None if uncached."""
+    cfg = _get_cfg()
+    conn = _init_cache()
+    row = conn.execute(
+        "SELECT canonical, cached_at FROM aliases WHERE retired = ?", (retired,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    cached_at = datetime.fromisoformat(row[1])
+    if datetime.utcnow() - cached_at > timedelta(days=cfg["cache_ttl_days"]):
+        return None
+    return row[0]
+
+
+def _alias_set(retired: str, canonical: str):
+    conn = _init_cache()
+    conn.execute(
+        "INSERT OR REPLACE INTO aliases (retired, canonical, cached_at) VALUES (?, ?, ?)",
+        (retired, canonical, datetime.utcnow().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def _hgnc_canonical(symbol: str) -> str | None:
+    """Resolve a retired/alias HGNC symbol to its current canonical symbol.
+
+    Tries prev_symbol first (retired -> current) then alias_symbol. Returns None
+    if HGNC has no mapping or is unreachable; the caller decides whether to negative-cache.
+    """
+    for field in ("prev_symbol", "alias_symbol"):
+        try:
+            r = requests.get(
+                f"{HGNC_BASE}/fetch/{field}/{symbol}",
+                headers=_HGNC_HEADERS,
+                timeout=(4, 8),
+            )
+            r.raise_for_status()
+            docs = r.json().get("response", {}).get("docs", [])
+            for doc in docs:
+                canonical = doc.get("symbol")
+                if canonical and canonical != symbol:
+                    return canonical
+        except Exception as e:
+            print(f"[hgnc] {field} lookup for {symbol} failed: {e}", file=sys.stderr)
+            continue
+    return None
 
 
 def _cache_get(key: str, use_cache: bool) -> dict | None:
@@ -103,10 +166,38 @@ def _request(path: str, params: dict = None, use_cache: bool = True) -> dict | N
 
 def lookup_gene(symbol: str, use_cache: bool = True) -> dict | None:
     """GET /lookup/symbol/human/{symbol}
-    Returns Ensembl ID, biotype, location, description."""
+    Returns Ensembl ID, biotype, location, description.
+
+    Falls back through HGNC's prev_symbol/alias_symbol resolver when Ensembl can't
+    find the symbol — handles retired HGNC symbols (e.g. PGCP -> CNDP1). The
+    resulting dict carries the canonical symbol; ``_resolved_from`` records the
+    original input when a substitution happened.
+    """
     data = _request(f"/lookup/symbol/human/{symbol}", {"expand": 0}, use_cache)
+    if data:
+        return _build_gene_record(symbol, data)
+
+    canonical = _alias_get(symbol) if use_cache else None
+    if canonical == ALIAS_NOT_FOUND:
+        return None
+    if canonical is None:
+        canonical = _hgnc_canonical(symbol)
+        if canonical is None:
+            if use_cache:
+                _alias_set(symbol, ALIAS_NOT_FOUND)
+            return None
+        _alias_set(symbol, canonical)
+
+    data = _request(f"/lookup/symbol/human/{canonical}", {"expand": 0}, use_cache)
     if not data:
         return None
+    print(f"[hgnc] resolved {symbol} -> {canonical}", file=sys.stderr)
+    record = _build_gene_record(canonical, data)
+    record["_resolved_from"] = symbol
+    return record
+
+
+def _build_gene_record(symbol: str, data: dict) -> dict:
     return {
         "symbol": symbol,
         "ensembl_id": data.get("id"),

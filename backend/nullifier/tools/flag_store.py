@@ -2,13 +2,17 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from ..config.loader import load_config
 
-DB_PATH = Path.home() / ".nullifier" / "flags.db"
+
+def _db_path() -> Path:
+    return Path(load_config()["flags"]["db_path"])
 
 
 def _init_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    db_path = _db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS flags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -10,7 +10,7 @@ model = "claude-sonnet-4-20250514"
 provider = "openai_compatible"
 endpoint = "http://127.0.0.1:1234/v1"
 # LM Studio is up. Typical ids: "google/gemma-4-e4b", "google/gemma-2-9b-it".
-model = "google/gemma-3n-e4b"
+model = "google/gemma-4-e4b"
 api_key = "lm-studio"  # LM Studio ignores the key but the SDK requires one
 parallel_requests = 2
 request_timeout_seconds = 300

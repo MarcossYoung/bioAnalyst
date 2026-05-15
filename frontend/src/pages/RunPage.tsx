@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { cancelRun, connectRunWs } from '../lib/api'
 import type {
@@ -50,32 +50,7 @@ export function RunPage() {
   const wsRef = useRef<WebSocket | null>(null)
   const logBottomRef = useRef<HTMLDivElement | null>(null)
 
-  useEffect(() => {
-    if (!runId) return
-    const ws = connectRunWs(
-      runId,
-      (ev) => {
-        setEvents((prev) => {
-          if (prev.some((e) => e.seq === ev.seq)) return prev
-          return [...prev, ev]
-        })
-        handleEvent(ev)
-      },
-      () => {
-        setConnected(false)
-        setDone(true)
-      },
-    )
-    ws.onopen = () => setConnected(true)
-    wsRef.current = ws
-    return () => ws.close()
-  }, [runId])
-
-  useEffect(() => {
-    logBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [events.length])
-
-  function handleEvent(ev: WsEvent) {
+  const handleEvent = useCallback((ev: WsEvent) => {
     if (ev.type === 'confirmation_required') {
       setConfirmPayload(ev.payload as unknown as ConfirmPayload)
     }
@@ -115,7 +90,32 @@ export function RunPage() {
     if (ev.type === 'compute_robustness_complete') {
       setRobustness(ev.payload as unknown as RobustnessResult)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!runId) return
+    const ws = connectRunWs(
+      runId,
+      (ev) => {
+        setEvents((prev) => {
+          if (prev.some((e) => e.seq === ev.seq)) return prev
+          return [...prev, ev]
+        })
+        handleEvent(ev)
+      },
+      () => {
+        setConnected(false)
+        setDone(true)
+      },
+    )
+    ws.onopen = () => setConnected(true)
+    wsRef.current = ws
+    return () => ws.close()
+  }, [runId, handleEvent])
+
+  useEffect(() => {
+    logBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [events.length])
 
   function sendWs(msg: Record<string, unknown>) {
     wsRef.current?.send(JSON.stringify(msg))

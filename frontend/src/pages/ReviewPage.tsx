@@ -107,7 +107,11 @@ export function ReviewPage() {
       if (tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'SELECT') return
       if (e.key === 'j') { e.preventDefault(); next() }
       else if (e.key === 'k') { e.preventDefault(); prev() }
-      else if (e.key === 'f' || e.key === 'c') { e.preventDefault(); formOpen ? setFormOpen(false) : openForm() }
+      else if (e.key === 'f' || e.key === 'c') {
+        e.preventDefault()
+        if (formOpen) setFormOpen(false)
+        else openForm()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
