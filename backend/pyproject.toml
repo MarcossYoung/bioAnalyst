@@ -11,6 +11,9 @@ dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.30.0",
     "python-dotenv>=1.0.0",
+    "numpy>=1.26.0",
+    "scipy>=1.11.0",
+    "openpyxl>=3.1.0",
 ]
 
 [build-system]

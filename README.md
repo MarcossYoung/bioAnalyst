@@ -12,7 +12,7 @@ Six stages run in sequence:
 
 2. **Librarian** — For each atomic claim, generates 5–8 query variants, searches four literature sources in parallel, deduplicates, and classifies each paper as `supports / contradicts / tangential / confounder`. Every classification requires a verbatim abstract quote.
 
-3. **Analyst** *(when starter entities are provided)* — Expands the hypothesis gene list against canonical SynGO and BBB gene sets (scored for relevance by a local Gemma classifier). Fetches Ensembl genomic data for each gene (orthologs, dN/dS, regulatory features, motif overlap). Gene fetching is capped at `gene_sets.max_genes` (default 150) to keep runtime bounded.
+3. **Analyst** *(when starter entities are provided)* — Expands the hypothesis gene list against canonical SynGO and BBB gene sets (scored for relevance by a local Gemma classifier, with a heuristic fallback for set relevance). Fetches Ensembl genomic data for each gene (orthologs, dN/dS, regulatory features, motif overlap).
 
 4. **Methodologist** — Reads the expanded gene-set data and selects an appropriate statistical test plan: which tests to run, which correction method to apply, which genes form each group.
 
@@ -58,11 +58,13 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export SEMANTIC_SCHOLAR_API_KEY=your-key
 ```
 
-### Local LLM (optional but recommended)
+### Local LLM
 
-Install [LM Studio](https://lmstudio.ai) and load a Gemma model (e.g. `google/gemma-3n-e4b`). Without it, per-paper classification and gene-set scoring fall back to Claude (higher cost, slower for large batches).
+Install [LM Studio](https://lmstudio.ai) and load a Gemma model (e.g. `google/gemma-3n-e4b`). The default routing uses the local model for high-volume per-paper classification, gene-set scoring, and robustness reading. If LM Studio is unavailable, tasks still routed to `local` can fail; gene-set scoring has a heuristic fallback, but per-paper classification does not automatically reroute to Claude.
 
 Check the loaded model ID via LM Studio's `/api/health` endpoint and set `backends.local.model` in your config to match exactly.
+
+To run without LM Studio, edit `~/.nullifier/config.toml` and route the local tasks you need to `"claude"`.
 
 ## Configuration
 
@@ -93,8 +95,9 @@ default_correction = "benjamini_hochberg"
 
 ## Web UI
 
-```bash
+```powershell
 # From the repo root
+$env:PYTHONPATH="backend"   # PowerShell; Linux/Mac: export PYTHONPATH=backend
 python -m nullifier.cli serve
 ```
 
@@ -109,8 +112,9 @@ Then open **http://127.0.0.1:8000** in your browser.
 
 For development with hot-reload:
 
-```bash
+```powershell
 # Terminal 1 — backend
+$env:PYTHONPATH="backend"   # PowerShell; Linux/Mac: export PYTHONPATH=backend
 python -m nullifier.cli serve --reload
 
 # Terminal 2 — frontend (Vite HMR at localhost:5173)
@@ -146,7 +150,7 @@ python -m nullifier.cli flags list
 |------|---------|-------------|
 | `--input` | required | Path to hypothesis text file |
 | `--output-json` | none | Save full report JSON for later review |
-| `--max-papers` | 12 | Max papers retrieved per atomic claim |
+| `--max-papers` | 6 | Max papers retrieved per atomic claim in CLI runs; web/API default is 12 |
 | `--no-confirm` | off | Skip the confirmation gate |
 | `--debug` | off | Print raw event stream alongside output |
 
@@ -230,7 +234,7 @@ Typical run on a 2–3 claim hypothesis with LM Studio running:
 | Ensembl lookups | free (cached after first run) |
 | **Total** | **~$0.08–0.20** |
 
-Without LM Studio, all local tasks route to Claude: ~$0.25–0.60 per run.
+If you reroute all local tasks to Claude, expect roughly ~$0.25–0.60 per run.
 
 ## Design Decisions
 
@@ -240,5 +244,5 @@ Without LM Studio, all local tasks route to Claude: ~$0.25–0.60 per run.
 - **Deterministic compute layer.** Statistical tests in `tools/compute.py` are pure functions — same data always produces the same result. The Methodologist chooses which tests to run; compute just executes them.
 - **Graceful degradation.** Each literature source is independently wrapped with a circuit breaker. LM Studio being unavailable is surfaced at startup; per-task errors emit `run_failed`, not crashes.
 - **Verbatim quote requirement.** Every paper classification must include a verbatim abstract sentence, enforced in Librarian prompts and checked by the Skeptic.
-- **Flag learning is prompting, not fine-tuning.** User corrections are stored in `~/.nullifier/flags.db` and injected as few-shot examples on future runs with matching domain/entities.
+- **Flag learning is prompting, not fine-tuning.** User corrections are stored in the configured `flags.db_path` (default `~/.nullifier/flags.db`) and injected as few-shot examples on future runs with matching domain/entities.
 - **`NOVEL-UNTESTED` is not `WEAK`.** A hypothesis with no prior literature is uninvestigated, not disproven.
