@@ -445,3 +445,59 @@ def fetch_compara_metadata(ensg_id: str, use_cache: bool = True) -> dict:
         "species_count": len(homologies),
         "method_link_types": method_types,
     }
+
+
+def fetch_compara_methods(use_cache: bool = True) -> list[dict]:
+    """GET /info/compara/methods/ — available Compara alignment/homology methods."""
+    data = _request("/info/compara/methods/", {}, use_cache)
+    if isinstance(data, dict):
+        return [
+            {"category": category, "method": method}
+            for category, methods in data.items()
+            for method in (methods if isinstance(methods, list) else [])
+        ]
+    return data if isinstance(data, list) else []
+
+
+def fetch_compara_species_sets(method: str = "EPO", use_cache: bool = True) -> list[dict]:
+    """GET /info/compara/species_sets/{method} — species in a named alignment."""
+    data = _request(f"/info/compara/species_sets/{method}", {}, use_cache)
+    return data if isinstance(data, list) else []
+
+
+def fetch_comparas(use_cache: bool = True) -> list[dict]:
+    """GET /info/comparas — all available Compara databases."""
+    data = _request("/info/comparas", {}, use_cache)
+    if isinstance(data, dict) and isinstance(data.get("comparas"), list):
+        return data["comparas"]
+    return data if isinstance(data, list) else []
+
+
+def fetch_gene_tree_by_id(tree_id: str, use_cache: bool = True) -> dict | None:
+    """GET /genetree/id/{tree_id} — fetch gene tree by Compara stable tree ID.
+    Returns same shape as fetch_gene_tree_aligned; use when tree_id is already known."""
+    data = _request(
+        f"/genetree/id/{tree_id}",
+        {"sequence": "cdna", "aligned": 1, "nh_format": "simple",
+         "compara": "multi", "prune_taxon": 40674},
+        use_cache=use_cache,
+    )
+    if not data:
+        return None
+    sequences: dict = {}
+
+    def _walk(node: dict) -> None:
+        children = node.get("children") or []
+        if not children:
+            sp = (node.get("taxonomy") or {}).get("scientific_name", "").replace(" ", "_")
+            seq = (node.get("sequence") or {}).get("mol_seq", {}).get("seq")
+            if sp and seq:
+                sequences[sp] = seq
+        for c in children:
+            _walk(c)
+
+    _walk(data.get("tree") or {})
+    newick = data.get("newick", "")
+    if not sequences:
+        return None
+    return {"sequences": sequences, "newick": newick}

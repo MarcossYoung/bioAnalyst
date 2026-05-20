@@ -207,11 +207,12 @@ async def ws_run(websocket: WebSocket, run_id: str):
     try:
         # Replay already-persisted events (gives reconnecting clients full history)
         for event_row in db.get_events(run_id):
-            await websocket.send_json(event_row)
+            if not await _safe_send_json(websocket, event_row):
+                return
 
         # Terminal runs: replay and close
         if run["status"] in ("completed", "failed", "cancelled"):
-            await websocket.close()
+            await _safe_close(websocket)
             return
 
         # Stream live events; concurrently handle incoming WS messages
@@ -219,28 +220,62 @@ async def ws_run(websocket: WebSocket, run_id: str):
 
         while True:
             drain_task = asyncio.create_task(client_q.get())
-            done, _ = await asyncio.wait(
-                {drain_task, recv_task}, return_when=asyncio.FIRST_COMPLETED
-            )
+            try:
+                done, _ = await asyncio.wait(
+                    {drain_task, recv_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+            except asyncio.CancelledError:
+                await _cancel_task(drain_task)
+                await _cancel_task(recv_task)
+                raise
 
             if drain_task in done:
                 item = drain_task.result()
                 if item is None:  # sentinel: run ended
-                    recv_task.cancel()
-                    await websocket.close()
+                    await _cancel_task(recv_task)
+                    await _safe_close(websocket)
                     break
-                await websocket.send_json(item)
+                if not await _safe_send_json(websocket, item):
+                    await _cancel_task(recv_task)
+                    break
 
             if recv_task in done:
                 msg = recv_task.result()
                 if msg is None:  # client disconnected
-                    drain_task.cancel()
+                    await _cancel_task(drain_task)
                     break
+                await _cancel_task(drain_task)
                 _handle_ws_message(run_id, msg)
                 recv_task = asyncio.create_task(_safe_receive(websocket))
 
     finally:
         _subscribers.get(run_id, set()).discard(client_q)
+
+
+async def _safe_send_json(ws: WebSocket, payload: dict) -> bool:
+    """Send one JSON payload; return False when the client is already gone."""
+    try:
+        await ws.send_json(payload)
+        return True
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        return False
+
+
+async def _safe_close(ws: WebSocket) -> None:
+    try:
+        await ws.close()
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        pass
+
+
+async def _cancel_task(task: asyncio.Task | None) -> None:
+    if not task or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def _safe_receive(ws: WebSocket) -> dict | None:
