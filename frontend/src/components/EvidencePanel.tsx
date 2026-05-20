@@ -260,7 +260,7 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
               </p>
             )}
 
-            {(claim.confounders_identified?.length ?? 0) > 0 && (
+            {claim.confounders_identified && (
               <div style={{ marginBottom: '10px' }}>
                 <div style={{
                   fontSize: '10px', fontWeight: 600, letterSpacing: '0.08em',
@@ -268,15 +268,9 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
                 }}>
                   Confounders
                 </div>
-                <ul style={{ margin: 0, paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  {claim.confounders_identified!.map((c, i) => (
-                    <li key={i} style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                      <span style={{ color: 'var(--text-heading)', fontWeight: 600 }}>{c.confounder}</span>
-                      {c.why_it_matters ? ` — ${c.why_it_matters}` : ''}
-                      {c.source_paper_title ? <span style={{ fontStyle: 'italic' }}> ({c.source_paper_title})</span> : ''}
-                    </li>
-                  ))}
-                </ul>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
+                  {claim.confounders_identified}
+                </p>
               </div>
             )}
 

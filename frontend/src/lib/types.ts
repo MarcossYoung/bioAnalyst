@@ -43,19 +43,13 @@ export interface PaperClassification {
   reasoning: string
 }
 
-export interface Confounder {
-  confounder: string
-  source_paper_title?: string
-  why_it_matters?: string
-}
-
 export interface ClaimEvidence {
   claim_id: string
   evidence_strength: string  // strong | moderate | weak | absent
   novelty_flag: string       // well-studied | sparsely-studied | unstudied
   synthesis: string
   literature_gap?: string
-  confounders_identified?: Confounder[]
+  confounders_identified?: string
   classifications: PaperClassification[]
   retrieved_papers: NormalizedPaper[]
   queries_used?: { query: string; intent?: string }[]
