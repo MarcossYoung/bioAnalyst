@@ -226,6 +226,14 @@ def _build_gene_record(symbol: str, data: dict) -> dict:
     }
 
 
+def _dnds(homology: dict) -> float | None:
+    dn = homology.get("dn")
+    ds = homology.get("ds")
+    if dn is None or ds is None or ds <= 0:
+        return None
+    return dn / ds
+
+
 def get_orthologs(symbol: str, target_taxon: int = 40674,  # Mammalia
                   use_cache: bool = True) -> list[dict]:
     """GET /homology/symbol/human/{symbol}?type=orthologues
@@ -250,7 +258,7 @@ def get_orthologs(symbol: str, target_taxon: int = 40674,  # Mammalia
             "perc_pos": target.get("perc_pos"),
             "dn": h.get("dn"),
             "ds": h.get("ds"),
-            "dnds": (h["dn"] / h["ds"]) if (h.get("dn") and h.get("ds") and h["ds"] > 0) else None,
+            "dnds": _dnds(h),
             "method_link_type": h.get("method_link_type"),
         })
     return out
@@ -390,7 +398,7 @@ def fetch_orthologs_by_id(ensg_id: str, target_taxon: int = 40674,
             "perc_pos": target.get("perc_pos"),
             "dn": h.get("dn"),
             "ds": h.get("ds"),
-            "dnds": (h["dn"] / h["ds"]) if (h.get("dn") and h.get("ds") and h["ds"] > 0) else None,
+            "dnds": _dnds(h),
             "method_link_type": h.get("method_link_type"),
         })
     return out

@@ -43,6 +43,26 @@ _FAKE_CONDENSED_BODY = {
     }]
 }
 
+_FAKE_ZERO_DN_BODY = {
+    "data": [{
+        "homologies": [
+            {
+                "type": "ortholog_one2one",
+                "method_link_type": "ENSEMBL_ORTHOLOGUES",
+                "dn": 0.0,
+                "ds": 0.2,
+                "target": {
+                    "species": "mus_musculus",
+                    "id": "ENSMUSG00000001234",
+                    "protein_id": "ENSMUSP00000001234",
+                    "perc_id": 95.0,
+                    "perc_pos": 97.0,
+                },
+            }
+        ]
+    }]
+}
+
 
 # ── fetch_orthologs_by_id ────────────────────────────────────────────────────
 
@@ -113,6 +133,34 @@ def test_fetch_orthologs_by_id_empty_data(tmp_path, monkeypatch):
 
 
 # ── fetch_cds_sequence ───────────────────────────────────────────────────────
+
+def test_fetch_orthologs_by_id_preserves_zero_dn_dnds(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    with patch("nullifier.tools.ensembl.requests.get",
+               return_value=_mock_resp(_FAKE_ZERO_DN_BODY)):
+        result = e.fetch_orthologs_by_id("ENSG00000000009")
+        assert result[0]["dn"] == 0.0
+        assert result[0]["dnds"] == 0.0
+
+
+def test_get_orthologs_preserves_zero_dn_dnds(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    with patch("nullifier.tools.ensembl.requests.get",
+               return_value=_mock_resp(_FAKE_ZERO_DN_BODY)):
+        result = e.get_orthologs("SHANK3")
+        assert result[0]["dn"] == 0.0
+        assert result[0]["dnds"] == 0.0
+
 
 def test_fetch_cds_sequence_returns_string(tmp_path, monkeypatch):
     monkeypatch.setattr(e, "_cfg", {
