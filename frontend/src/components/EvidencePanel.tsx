@@ -67,6 +67,18 @@ function mergePapers(claim: ClaimEvidence): DisplayPaper[] {
   })
 }
 
+function confoundersText(value: ClaimEvidence['confounders_identified']): string {
+  if (!value) return ''
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => typeof item === 'string' ? item : item?.confounder)
+      .filter(Boolean)
+      .join('; ')
+  }
+  return String(value)
+}
+
 function FlagPopover({ paper, ctx, onDone }: { paper: DisplayPaper; ctx: FlagContext; onDone: () => void }) {
   const [correct, setCorrect] = useState<string>(CLASSIFICATION_OPTIONS.find((o) => o !== paper.classification) ?? 'tangential')
   const [reason, setReason] = useState('')
@@ -209,6 +221,7 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
         const papers = mergePapers(claim)
         const stmt = claimText?.[claim.claim_id]
         const novelty = claim.novelty_flag && claim.novelty_flag !== 'normal' ? claim.novelty_flag : null
+        const confounders = confoundersText(claim.confounders_identified)
         return (
           <div key={claim.claim_id}>
             {/* Claim header */}
@@ -260,7 +273,7 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
               </p>
             )}
 
-            {claim.confounders_identified && (
+            {confounders && (
               <div style={{ marginBottom: '10px' }}>
                 <div style={{
                   fontSize: '10px', fontWeight: 600, letterSpacing: '0.08em',
@@ -269,7 +282,7 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
                   Confounders
                 </div>
                 <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
-                  {claim.confounders_identified}
+                  {confounders}
                 </p>
               </div>
             )}

@@ -49,7 +49,7 @@ export interface ClaimEvidence {
   novelty_flag: string       // well-studied | sparsely-studied | unstudied
   synthesis: string
   literature_gap?: string
-  confounders_identified?: string
+  confounders_identified?: string | { confounder?: string }[]
   classifications: PaperClassification[]
   retrieved_papers: NormalizedPaper[]
   queries_used?: { query: string; intent?: string }[]
