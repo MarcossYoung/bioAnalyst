@@ -29,6 +29,30 @@ from scipy import stats as sps
 
 ALPHA = 0.05
 
+TEST_RESULT_FIELDS = (
+    "test",
+    "requested",
+    "available",
+    "error",
+    "n",
+    "statistic",
+    "p_value",
+    "p_value_adjusted",
+    "significant",
+    "significant_adjusted",
+    "effect_size",
+    "effect_size_name",
+    "effect_size_label",
+    "ci",
+    "ci_lower",
+    "ci_upper",
+    "method",
+    "inputs",
+    "details",
+    "warnings",
+    "rationale",
+)
+
 # Categories the tool genuinely cannot verify from Ensembl alone (moved from analyst.py).
 NOT_VERIFIABLE_HERE = [
     "branch-specific / lineage-specific dN/dS (requires PAML/codeml on an alignment)",
@@ -73,33 +97,111 @@ def _round(x, n=6):
     return round(f, n)
 
 
+def _ci_bounds(ci) -> tuple:
+    if isinstance(ci, (list, tuple)) and len(ci) >= 2:
+        return _round(ci[0]), _round(ci[1])
+    return None, None
+
+
+def _test_result(
+    test: str,
+    *,
+    requested: str | None = None,
+    available: bool = True,
+    error: str | None = None,
+    n=None,
+    statistic=None,
+    p_value=None,
+    p_value_adjusted=None,
+    significant=None,
+    significant_adjusted=None,
+    effect_size=None,
+    effect_size_name: str | None = None,
+    effect_size_label: str | None = None,
+    ci=None,
+    method: str = "",
+    inputs: dict | None = None,
+    details: dict | None = None,
+    warnings: list | None = None,
+    rationale: str | None = None,
+    **extra,
+) -> dict:
+    ci_lower, ci_upper = _ci_bounds(ci)
+    label = effect_size_label or effect_size_name
+    out = {
+        "test": test,
+        "requested": requested or test,
+        "available": bool(available),
+        "error": error,
+        "n": n,
+        "statistic": _round(statistic),
+        "p_value": _round(p_value, 8),
+        "p_value_adjusted": _round(p_value_adjusted, 8),
+        "significant": significant,
+        "significant_adjusted": significant_adjusted,
+        "effect_size": _round(effect_size),
+        "effect_size_name": effect_size_name,
+        "effect_size_label": label,
+        "ci": ci,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "method": method,
+        "inputs": inputs or {},
+        "details": details or {},
+        "warnings": warnings or [],
+        "rationale": rationale,
+    }
+    out.update(extra)
+    return validate_test_result(out)
+
+
+def validate_test_result(result: dict) -> dict:
+    missing = [field for field in TEST_RESULT_FIELDS if field not in result]
+    if missing:
+        raise ValueError(f"Compute TestResult missing required field(s): {', '.join(missing)}")
+    if not isinstance(result["test"], str) or not result["test"]:
+        raise ValueError("Compute TestResult.test must be a non-empty string")
+    if not isinstance(result["requested"], str) or not result["requested"]:
+        raise ValueError("Compute TestResult.requested must be a non-empty string")
+    if not isinstance(result["available"], bool):
+        raise ValueError("Compute TestResult.available must be a boolean")
+    if result["warnings"] is None:
+        result["warnings"] = []
+    if result["details"] is None:
+        result["details"] = {}
+    if result["inputs"] is None:
+        result["inputs"] = {}
+    return result
+
+
 # ── effect sizes ────────────────────────────────────────────────────────────
 def cohens_d(a, b) -> dict:
     a, b = _clean(a), _clean(b)
     if len(a) < 2 or len(b) < 2:
-        return {"test": "cohens_d", "error": "need >=2 values per group",
-                "n": [int(len(a)), int(len(b))]}
+        return _test_result("cohens_d", error="need >=2 values per group",
+                            n=[int(len(a)), int(len(b))])
     na, nb = len(a), len(b)
     sp = math.sqrt(((na - 1) * a.var(ddof=1) + (nb - 1) * b.var(ddof=1)) / (na + nb - 2))
     d = (a.mean() - b.mean()) / sp if sp > 0 else 0.0
-    return {"test": "cohens_d", "n": [int(na), int(nb)], "effect_size": _round(d),
-            "statistic": _round(d), "p_value": None, "ci": None, "significant": None,
-            "method": "Cohen's d (pooled SD)"}
+    return _test_result("cohens_d", n=[int(na), int(nb)], effect_size=d,
+                        effect_size_name="cohens_d", statistic=d, p_value=None,
+                        ci=None, significant=None, method="Cohen's d (pooled SD)")
 
 
 def cliffs_delta(a, b) -> dict:
     a, b = _clean(a), _clean(b)
     if len(a) == 0 or len(b) == 0:
-        return {"test": "cliffs_delta", "error": "empty group", "n": [int(len(a)), int(len(b))]}
+        return _test_result("cliffs_delta", error="empty group", n=[int(len(a)), int(len(b))])
     gt = sum(1 for x in a for y in b if x > y)
     lt = sum(1 for x in a for y in b if x < y)
     delta = (gt - lt) / (len(a) * len(b))
     mag = abs(delta)
     label = ("negligible" if mag < 0.147 else "small" if mag < 0.33
              else "medium" if mag < 0.474 else "large")
-    return {"test": "cliffs_delta", "n": [int(len(a)), int(len(b))],
-            "effect_size": _round(delta), "statistic": _round(delta), "magnitude": label,
-            "p_value": None, "ci": None, "significant": None, "method": "Cliff's delta"}
+    return _test_result("cliffs_delta", n=[int(len(a)), int(len(b))],
+                        effect_size=delta, effect_size_name="cliffs_delta",
+                        effect_size_label=label, statistic=delta, magnitude=label,
+                        p_value=None, ci=None, significant=None, method="Cliff's delta")
 
 
 # ── group-difference tests ──────────────────────────────────────────────────
@@ -109,20 +211,25 @@ def kruskal_wallis(groups: dict) -> dict:
     non_empty = [(k, a) for k, a in arrays if len(a) > 0]
     sizes = {k: int(len(a)) for k, a in arrays}
     if len(non_empty) < 2 or any(len(a) < 2 for _, a in non_empty):
-        return {"test": "kruskal_wallis", "error": "need >=2 groups with >=2 values each",
-                "inputs": {"group_sizes": sizes}}
+        return _test_result("kruskal_wallis", error="need >=2 groups with >=2 values each",
+                            inputs={"group_sizes": sizes})
     H, p = sps.kruskal(*[a for _, a in non_empty])
     k = len(non_empty)
     n = sum(len(a) for _, a in non_empty)
     eps2 = (H - k + 1) / (n - k) if n > k else None  # epsilon-squared
-    return {
-        "test": "kruskal_wallis",
-        "inputs": {"groups": [k for k, _ in non_empty], "group_sizes": sizes},
-        "statistic": _round(H), "df": k - 1, "p_value": _round(p, 8),
-        "significant": bool(p < ALPHA), "effect_size": _round(eps2),
-        "effect_size_name": "epsilon_squared", "ci": None,
-        "method": f"Kruskal–Wallis H-test across {k} groups (scipy.stats.kruskal)",
-    }
+    return _test_result(
+        "kruskal_wallis",
+        n=int(n),
+        inputs={"groups": [k for k, _ in non_empty], "group_sizes": sizes},
+        statistic=H,
+        df=k - 1,
+        p_value=p,
+        significant=bool(p < ALPHA),
+        effect_size=eps2,
+        effect_size_name="epsilon_squared",
+        ci=None,
+        method=f"Kruskal-Wallis H-test across {k} groups (scipy.stats.kruskal)",
+    )
 
 
 def mann_whitney_posthoc(groups: dict) -> dict:
@@ -146,8 +253,15 @@ def mann_whitney_posthoc(groups: dict) -> dict:
                 "effect_size": cd.get("effect_size"), "effect_size_name": "cliffs_delta",
                 "significant": bool(p < ALPHA),
             })
-    return {"test": "mann_whitney_posthoc", "pairs": pairs,
-            "method": "Pairwise Mann–Whitney U with Cliff's delta (uncorrected p; apply a correction)"}
+    return _test_result(
+        "mann_whitney_posthoc",
+        n=sum(sum(pair.get("n", [])) for pair in pairs if isinstance(pair.get("n"), list)) or None,
+        effect_size_name="cliffs_delta",
+        method="Pairwise Mann-Whitney U with Cliff's delta (uncorrected p; apply a correction)",
+        details={"pairs": pairs},
+        warnings=["Pairwise p-values and effect sizes are reported in details.pairs."],
+        pairs=pairs,
+    )
 
 
 # ── correlation ─────────────────────────────────────────────────────────────
@@ -169,23 +283,23 @@ def _paired(x, y) -> tuple[np.ndarray, np.ndarray]:
 def spearman(x, y) -> dict:
     x, y = _paired(x, y)
     if len(x) < 3:
-        return {"test": "spearman", "error": "need >=3 paired observations", "n": int(len(x))}
+        return _test_result("spearman", error="need >=3 paired observations", n=int(len(x)))
     rho, p = sps.spearmanr(x, y)
-    return {"test": "spearman", "n": int(len(x)), "statistic": _round(rho),
-            "effect_size": _round(rho), "effect_size_name": "rho", "p_value": _round(p, 8),
-            "ci": _fisher_ci(rho, len(x)), "significant": bool(p < ALPHA),
-            "method": "Spearman rank correlation (scipy.stats.spearmanr)"}
+    return _test_result("spearman", n=int(len(x)), statistic=rho,
+                        effect_size=rho, effect_size_name="rho", p_value=p,
+                        ci=_fisher_ci(rho, len(x)), significant=bool(p < ALPHA),
+                        method="Spearman rank correlation (scipy.stats.spearmanr)")
 
 
 def pearson(x, y) -> dict:
     x, y = _paired(x, y)
     if len(x) < 3:
-        return {"test": "pearson", "error": "need >=3 paired observations", "n": int(len(x))}
+        return _test_result("pearson", error="need >=3 paired observations", n=int(len(x)))
     r, p = sps.pearsonr(x, y)
-    return {"test": "pearson", "n": int(len(x)), "statistic": _round(r),
-            "effect_size": _round(r), "effect_size_name": "r", "p_value": _round(p, 8),
-            "ci": _fisher_ci(r, len(x)), "significant": bool(p < ALPHA),
-            "method": "Pearson product-moment correlation (scipy.stats.pearsonr)"}
+    return _test_result("pearson", n=int(len(x)), statistic=r,
+                        effect_size=r, effect_size_name="r", p_value=p,
+                        ci=_fisher_ci(r, len(x)), significant=bool(p < ALPHA),
+                        method="Pearson product-moment correlation (scipy.stats.pearsonr)")
 
 
 def _fisher_ci(r: float, n: int, conf: float = 0.95):
@@ -209,28 +323,30 @@ def _table(table):
 def fisher_exact(table) -> dict:
     arr = _table(table)
     if arr.shape != (2, 2):
-        return {"test": "fisher_exact", "error": "Fisher's exact requires a 2x2 table",
-                "shape": list(arr.shape)}
+        return _test_result("fisher_exact", error="Fisher's exact requires a 2x2 table",
+                            inputs={"shape": list(arr.shape)}, shape=list(arr.shape))
     odds, p = sps.fisher_exact(arr, alternative="two-sided")
-    return {"test": "fisher_exact", "table": arr.tolist(), "statistic": _round(odds),
-            "effect_size": _round(odds), "effect_size_name": "odds_ratio", "p_value": _round(p, 8),
-            "ci": None, "significant": bool(p < ALPHA), "method": "Fisher's exact test (2x2)"}
+    return _test_result("fisher_exact", n=int(arr.sum()), inputs={"table": arr.tolist()},
+                        table=arr.tolist(), statistic=odds, effect_size=odds,
+                        effect_size_name="odds_ratio", p_value=p, ci=None,
+                        significant=bool(p < ALPHA), method="Fisher's exact test (2x2)")
 
 
 def chi_square(table) -> dict:
     arr = _table(table)
     if arr.size == 0 or (arr.sum(axis=1) == 0).any() or (arr.sum(axis=0) == 0).any():
-        return {"test": "chi_square", "error": "table has an empty row or column",
-                "table": arr.tolist()}
+        return _test_result("chi_square", error="table has an empty row or column",
+                            inputs={"table": arr.tolist()}, table=arr.tolist())
     chi2, p, dof, expected = sps.chi2_contingency(arr)
     n = arr.sum()
     k = min(arr.shape) - 1
     cramers_v = math.sqrt(chi2 / (n * k)) if n > 0 and k > 0 else None
     low_expected = bool((np.asarray(expected) < 5).any())
-    return {"test": "chi_square", "table": arr.tolist(), "statistic": _round(chi2), "df": int(dof),
-            "p_value": _round(p, 8), "effect_size": _round(cramers_v), "effect_size_name": "cramers_v",
-            "ci": None, "significant": bool(p < ALPHA), "low_expected_counts": low_expected,
-            "method": "Pearson chi-square test of independence (scipy.stats.chi2_contingency)"}
+    return _test_result("chi_square", n=int(n), inputs={"table": arr.tolist()}, table=arr.tolist(),
+                        statistic=chi2, df=int(dof), p_value=p, effect_size=cramers_v,
+                        effect_size_name="cramers_v", ci=None, significant=bool(p < ALPHA),
+                        low_expected_counts=low_expected,
+                        method="Pearson chi-square test of independence (scipy.stats.chi2_contingency)")
 
 
 # ── resampling ──────────────────────────────────────────────────────────────
@@ -243,22 +359,22 @@ def bootstrap_ci(values, statistic: str = "mean", n_iter: int = 5000, conf: floa
                  seed: int = 0) -> dict:
     a = _clean(values)
     if len(a) < 2:
-        return {"test": "bootstrap_ci", "error": "need >=2 values", "n": int(len(a))}
+        return _test_result("bootstrap_ci", error="need >=2 values", n=int(len(a)))
     fn = _STAT_FNS.get(statistic, np.mean)
     rng = np.random.default_rng(seed)
     boot = np.array([fn(rng.choice(a, size=len(a), replace=True)) for _ in range(int(n_iter))])
     lo, hi = np.percentile(boot, [(1 - conf) / 2 * 100, (1 + conf) / 2 * 100])
-    return {"test": "bootstrap_ci", "n": int(len(a)), "statistic_name": statistic,
-            "statistic": _round(float(fn(a))), "ci": [_round(lo), _round(hi)], "p_value": None,
-            "n_iter": int(n_iter), "conf": conf, "significant": None,
-            "method": f"Percentile bootstrap {int(conf*100)}% CI for the {statistic} ({int(n_iter)} resamples)"}
+    return _test_result("bootstrap_ci", n=int(len(a)), statistic_name=statistic,
+                        statistic=float(fn(a)), ci=[_round(lo), _round(hi)], p_value=None,
+                        n_iter=int(n_iter), conf=conf, significant=None,
+                        method=f"Percentile bootstrap {int(conf*100)}% CI for the {statistic} ({int(n_iter)} resamples)")
 
 
 def permutation_test(a, b, statistic: str = "mean_diff", n_iter: int = 10000, seed: int = 0) -> dict:
     a, b = _clean(a), _clean(b)
     if len(a) < 2 or len(b) < 2:
-        return {"test": "permutation_test", "error": "need >=2 values per group",
-                "n": [int(len(a)), int(len(b))]}
+        return _test_result("permutation_test", error="need >=2 values per group",
+                            n=[int(len(a)), int(len(b))])
     if statistic == "median_diff":
         stat_fn = lambda x, y: np.median(x) - np.median(y)
     else:
@@ -273,10 +389,11 @@ def permutation_test(a, b, statistic: str = "mean_diff", n_iter: int = 10000, se
         if abs(stat_fn(pooled[:na], pooled[na:])) >= abs(obs):
             count += 1
     p = (count + 1) / (int(n_iter) + 1)
-    return {"test": "permutation_test", "n": [int(len(a)), int(len(b))], "statistic_name": statistic,
-            "statistic": _round(float(obs)), "p_value": _round(p, 8), "n_iter": int(n_iter),
-            "effect_size": _round(float(obs)), "ci": None, "significant": bool(p < ALPHA),
-            "method": f"Two-sided permutation test on the {statistic} ({int(n_iter)} permutations)"}
+    return _test_result("permutation_test", n=[int(len(a)), int(len(b))], statistic_name=statistic,
+                        statistic=float(obs), p_value=p, n_iter=int(n_iter),
+                        effect_size=float(obs), effect_size_name=statistic, ci=None,
+                        significant=bool(p < ALPHA),
+                        method=f"Two-sided permutation test on the {statistic} ({int(n_iter)} permutations)")
 
 
 # ── multiple-testing corrections (manual; no statsmodels dependency) ────────
@@ -330,6 +447,34 @@ _CORRECTION_ALIASES = {
 }
 
 
+def _paml_branch_model(inputs: dict, data: dict) -> dict:
+    paml = data.get("paml") or {}
+    computed = [v for v in paml.values()
+                if isinstance(v, dict) and v.get("status") == "computed"]
+    if not computed:
+        return {"available": False, "requested": "paml_branch_model",
+                "closest_alternative": "Compara pairwise dN/dS (already computed)"}
+    best = min(computed, key=lambda x: x.get("lrt_pvalue", 1.0))
+    from scipy.stats import chi2 as _chi2
+    return {
+        "test": "paml_branch_model", "available": True,
+        "n": len(computed),
+        "statistic": best["lrt_chi2"],
+        "p_value": best["lrt_pvalue"],
+        "significant": best["lrt_pvalue"] < 0.05,
+        "effect_size": best.get("omega_foreground"),
+        "effect_size_name": "omega_foreground",
+        "effect_size_label": (
+            "positive selection"
+            if (best.get("omega_foreground") or 0) > 1 else "purifying/neutral"
+        ),
+        "ci_lower": None, "ci_upper": None,
+        "per_gene": paml,
+        "foreground_group": inputs.get("foreground", "primates"),
+        "method": "PAML codeml branch model 2 LRT",
+    }
+
+
 # ── test library / plan dispatch ────────────────────────────────────────────
 # name -> (callable, list-of-input-keys, group-or-pair-test?)
 TEST_LIBRARY: dict[str, dict] = {
@@ -343,6 +488,7 @@ TEST_LIBRARY: dict[str, dict] = {
     "permutation_test":    {"fn": permutation_test,    "kind": "ab"},
     "cliffs_delta":        {"fn": cliffs_delta,        "kind": "ab"},
     "cohens_d":            {"fn": cohens_d,            "kind": "ab"},
+    "paml_branch_model":   {"fn": _paml_branch_model,  "kind": "paml"},
 }
 
 TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the supplied data dict):
@@ -354,6 +500,9 @@ TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the sup
 - bootstrap_ci          inputs: {"values": "<var or group.metric>", "statistic": "mean|median|std"}
 - permutation_test      inputs: {"a": "<var or group.metric>", "b": "<var or group.metric>", "statistic": "mean_diff|median_diff"}
 - cliffs_delta / cohens_d  inputs: {"a": "<...>", "b": "<...>"}
+- paml_branch_model  inputs: {"foreground": "primates"|"rodents"|"human"}.
+  Use when hypothesis involves lineage-specific acceleration or purifying selection.
+  Degrades gracefully (available=False) when codeml binary is not installed.
 Corrections: "benjamini_hochberg" (default for multi-test families), "bonferroni", "holm", "none"."""
 
 
@@ -426,9 +575,11 @@ def _run_one(name: str, inputs: dict, data: dict) -> dict:
             return fn(_lookup(inputs.get("values") or inputs.get("x"), data), **kw)
         if kind == "table":
             return fn(_resolve_table(inputs, data))
+        if kind == "paml":
+            return fn(inputs, data)
     except Exception as e:  # never let a bad plan crash the pipeline
-        return {"test": name, "error": f"{type(e).__name__}: {e}", "inputs": inputs}
-    return {"test": name, "error": "unhandled test kind"}
+        return _test_result(name or "unknown_test", error=f"{type(e).__name__}: {e}", inputs=inputs)
+    return _test_result(name or "unknown_test", error="unhandled test kind", inputs=inputs)
 
 
 def _closest_alternative(name: str) -> str:
@@ -440,19 +591,29 @@ def _closest_alternative(name: str) -> str:
     if "correl" in n or "regress" in n:
         return "spearman or pearson"
     if "pgls" in n or "phylo" in n or "paml" in n or "codeml" in n:
-        return "(not available here — deferred to v7; report as a limitation)"
+        return "use paml_branch_model (branch model 2 LRT, requires codeml in PATH)"
     return f"none of the {len(TEST_LIBRARY)} library tests match; pick one of: {', '.join(TEST_LIBRARY)}"
 
 
 def _data_summary(data: dict) -> dict:
     data = data or {}
-    return {
+    out = {
         "groups": {g: {m: len([x for x in vals if x is not None]) for m, vals in metrics.items()}
                    for g, metrics in data.get("groups", {}).items()},
         "variables": {v: len([x for x in vals if x is not None]) for v, vals in data.get("variables", {}).items()},
         "n_genes": len(data.get("gene_index", [])),
         "tables": list(data.get("tables", {}).keys()),
     }
+    gnomad_prov = (data.get("provenance") or {}).get("gnomad")
+    if gnomad_prov:
+        out["gnomad_coverage"] = gnomad_prov
+    compara_prov = (data.get("provenance") or {}).get("compara")
+    if compara_prov:
+        out["compara_coverage"] = compara_prov
+    phylo_prov = (data.get("provenance") or {}).get("phylo")
+    if phylo_prov:
+        out["phylo_coverage"] = phylo_prov
+    return out
 
 
 def run_analysis_plan(plan: dict, data: dict) -> dict:
@@ -469,29 +630,38 @@ def run_analysis_plan(plan: dict, data: dict) -> dict:
         name = (entry or {}).get("test", "")
         rationale = (entry or {}).get("rationale")
         if name not in TEST_LIBRARY:
-            results.append({"requested": name, "available": False,
-                            "closest_alternative": _closest_alternative(name), "rationale": rationale})
+            results.append(_test_result(
+                name or "unavailable_test",
+                requested=name or "unavailable_test",
+                available=False,
+                error="test unavailable",
+                details={"closest_alternative": _closest_alternative(name)},
+                closest_alternative=_closest_alternative(name),
+                rationale=rationale,
+            ))
             continue
         res = _run_one(name, (entry or {}).get("inputs", {}), data)
         res["available"] = True
         if rationale:
             res["rationale"] = rationale
-        results.append(res)
+        results.append(validate_test_result(res))
 
     # multiple-testing correction across the family of p-values produced
     corr_key = _CORRECTION_ALIASES.get((plan.get("correction") or "").lower() if isinstance(plan.get("correction"), str)
                                        else plan.get("correction"), None)
     corrections_applied: list[dict] = []
     if corr_key:
-        idx_p = [(i, r["p_value"]) for i, r in enumerate(results)
+        idx_p = [(i, r.get("p_value")) for i, r in enumerate(results)
                  if isinstance(r.get("p_value"), (int, float))]
         if len(idx_p) >= 2:
             c = _correction([p for _, p in idx_p], corr_key)
             for (i, _), p_adj, rej in zip(idx_p, c["pvals_adjusted"], c["reject"]):
                 results[i]["p_value_adjusted"] = p_adj
                 results[i]["significant_adjusted"] = bool(rej)
+                validate_test_result(results[i])
             corrections_applied.append({"method": plan.get("correction"), "adjust_method": corr_key,
                                         "n_tests": len(idx_p), "alpha": ALPHA})
+    results = [validate_test_result(r) for r in results]
     return {"tests": results, "corrections_applied": corrections_applied,
             "data_summary": _data_summary(data), "correction_requested": plan.get("correction")}
 

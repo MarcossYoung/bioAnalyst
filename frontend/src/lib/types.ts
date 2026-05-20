@@ -199,6 +199,9 @@ export interface AnalystResult {
   expansion?: GeneSetExpansion | null
   compute_results?: ComputeResult | null
   robustness?: RobustnessResult | null
+  // v7 fields
+  phylo_data?: Record<string, PhyloEntry | null>
+  data_provenance?: DataProvenance | null
 }
 
 // ── v6: gene-set expansion ───────────────────────────────────────────────────
@@ -216,17 +219,48 @@ export interface GeneSetExpansion {
 
 // ── v6: compute layer ────────────────────────────────────────────────────────
 
+export interface PamlGeneResult {
+  status: string
+  gene?: string
+  omega_foreground?: number | null
+  lrt_chi2?: number | null
+  lrt_pvalue?: number | null
+  n_species?: number
+  foreground_species?: string[]
+  foreground_group?: string
+  newick?: string | null
+}
+
+export interface PhyloEntry {
+  phylostratum: number
+  taxon_name: string
+  _source: string
+  _version: string
+}
+
+export interface DataProvenance {
+  gnomad?: { source: string; genome_build: string; genes_with_loeuf: number; total_genes: number } | null
+  phylo?: { source: string; version: string; genes_with_age: number; total_genes: number } | null
+  compara?: { source: string; genes_with_orthologs: number; total_genes: number } | null
+}
+
 export interface ComputeTest {
   test: string
   p_value: number | null
   significant: boolean | null
   significant_adjusted?: boolean | null
   effect_size?: number | null
+  effect_size_name?: string | null
   effect_size_label?: string | null
   ci_lower?: number | null
   ci_upper?: number | null
   n?: number | null
   error?: string | null
+  // v7: paml_branch_model fields
+  available?: boolean
+  per_gene?: Record<string, PamlGeneResult>
+  foreground_group?: string
+  method?: string
 }
 
 export interface ComputeResult {

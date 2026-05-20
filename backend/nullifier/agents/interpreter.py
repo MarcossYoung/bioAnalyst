@@ -15,11 +15,14 @@ INTERPRETER_SPEC = AgentSpec(
     ),
     behavioral_constraints=(
         "Do not invent numbers.",
-        "Do not override typed compute results.",
+        "Do not override typed compute results; treat them as a read-only ground truth.",
+        "Interpret every available test using its typed effect_size, effect_size_label, ci_lower, and ci_upper fields; when those fields are null, state that the typed result does not provide them.",
         "Return JSON only.",
     ),
     verification_rules=(
         "Every numeric claim must trace back to a value in the inputs.",
+        "For each available computed test, cite the typed effect_size/effect_size_label fields and ci_lower/ci_upper fields when interpreting the result.",
+        "If an available computed test has null effect-size or confidence-interval fields, state that the typed result does not provide them instead of inventing them.",
         "dN/dS values are pairwise human-vs-X, not branch-specific.",
         "Regulatory overlap is Jaccard-style and not statistically normalized.",
         "The tool is observational, not a phylogenetic comparative method.",
@@ -72,8 +75,22 @@ def _build_user_prompt(
             )
             continue
         bits = [t.get("test", "?")]
-        for k in ("statistic", "p_value", "p_value_adjusted", "effect_size", "ci", "significant", "significant_adjusted"):
-            if k in t and t[k] is not None:
+        for k in (
+            "n",
+            "statistic",
+            "p_value",
+            "p_value_adjusted",
+            "significant",
+            "significant_adjusted",
+            "effect_size",
+            "effect_size_name",
+            "effect_size_label",
+            "ci",
+            "ci_lower",
+            "ci_upper",
+            "method",
+        ):
+            if k in t:
                 bits.append(f"{k}={t[k]}")
         line = "  - " + ", ".join(bits)
         if t.get("rationale"):
@@ -129,10 +146,23 @@ def _build_user_prompt(
             f"regulatory_features={len(reg)}, mean_dN/dS={dnds_mean}"
         )
 
+    evidence_parts = [
+        "DETERMINISTIC COMPUTE RESULTS:\n" + ("\n".join(test_lines) or "  (none)"),
+        "CORRECTIONS APPLIED:\n" + ("\n".join(corr_lines) or "  (none)"),
+    ]
+    if rb_block.strip():
+        evidence_parts.append(rb_block.strip())
+    if repro_block.strip():
+        evidence_parts.append(repro_block.strip())
+    evidence_parts.append(
+        "PER-GENE GENOMIC DATA:\n" + ("\n".join(per_gene_lines) or "  (no gene data)")
+    )
+
     task = TaskObject(
         title="Interpret typed compute results",
         semantic_inputs={"hypothesis": formalized.get("core_hypothesis", "")},
         entities=tuple(expansion.get("starter") or []),
+        evidence=tuple(evidence_parts),
         contextual_state={
             "expanded_sets": list((expansion.get("expanded") or {}).keys()),
             "control_sets": list((expansion.get("controls") or {}).keys()),
@@ -147,15 +177,4 @@ def _build_user_prompt(
             "assessment_justification",
         ),
     )
-
-    return f"""{task.render()}
-
-DETERMINISTIC COMPUTE RESULTS (typed; you cannot invent or override these):
-tests:
-{chr(10).join(test_lines) or '  (none)'}
-corrections_applied:
-{chr(10).join(corr_lines) or '  (none)'}
-{rb_block}{repro_block}
-PER-GENE GENOMIC DATA SUMMARY:
-{chr(10).join(per_gene_lines) or '  (no gene data)'}
-"""
+    return task.render()

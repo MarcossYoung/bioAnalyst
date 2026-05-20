@@ -13,6 +13,9 @@ import { GenomicPanel } from '../components/GenomicPanel'
 import { GeneSetPanel } from '../components/GeneSetPanel'
 import { ComputeResultsSection } from '../components/ComputeResultsSection'
 import { RobustnessPanel } from '../components/RobustnessPanel'
+import { PhyloStratPanel } from '../components/PhyloStratPanel'
+import { PhylogenyView } from '../components/PhylogenyView'
+import { ProvenanceSummary } from '../components/ProvenanceSummary'
 
 const SECTION_LABEL: React.CSSProperties = {
   fontSize: '10px',
@@ -362,6 +365,14 @@ export function RunPage() {
             </>
           )}
 
+          {/* v7: Phylostratigraphy */}
+          {analyst && !analyst.skipped && analyst.phylo_data && Object.keys(analyst.phylo_data).length > 0 && (
+            <>
+              <div style={RULE} />
+              <PhyloStratPanel phyloData={analyst.phylo_data} />
+            </>
+          )}
+
           {/* v6: Gene-set expansion */}
           {geneSetExpansion && (
             <>
@@ -376,9 +387,24 @@ export function RunPage() {
             <>
               <div style={RULE} />
               <div style={SECTION_LABEL}>Statistical analysis</div>
+              {analyst?.data_provenance && (
+                <ProvenanceSummary provenance={analyst.data_provenance} />
+              )}
               <ComputeResultsSection result={computeResult} progressiveTests={computeTests} />
             </>
           )}
+
+          {/* v7: Branch-model phylogeny view */}
+          {(() => {
+            const allTests = computeResult?.tests ?? computeTests
+            const pamlTest = allTests.find(t => t.test === 'paml_branch_model')
+            return pamlTest ? (
+              <>
+                <div style={RULE} />
+                <PhylogenyView pamlTest={pamlTest} />
+              </>
+            ) : null
+          })()}
 
           {/* v6: Robustness */}
           {robustness && (

@@ -9,8 +9,15 @@ import pytest
 from nullifier.tools import compute as c
 
 
+def assert_full_test_result(result: dict):
+    missing = [field for field in c.TEST_RESULT_FIELDS if field not in result]
+    assert missing == []
+    c.validate_test_result(result)
+
+
 def test_kruskal_separates_groups():
     r = c.kruskal_wallis({"a": [1, 2, 3], "b": [10, 11, 12], "c": [20, 21, 22]})
+    assert_full_test_result(r)
     assert r["significant"] is True
     assert r["df"] == 2
     assert 0 < r["p_value"] < 0.05
@@ -19,6 +26,7 @@ def test_kruskal_separates_groups():
 
 def test_kruskal_handles_empty():
     r = c.kruskal_wallis({"a": [1, 2, 3]})
+    assert_full_test_result(r)
     assert "error" in r
 
 
@@ -97,9 +105,48 @@ def test_run_analysis_plan_dispatch_and_correction():
     ], "correction": "benjamini_hochberg"}
     out = c.run_analysis_plan(plan, data)
     assert len(out["tests"]) == 3
+    for result in out["tests"]:
+        assert_full_test_result(result)
     assert out["tests"][2]["available"] is False
     assert any(t.get("p_value_adjusted") is not None for t in out["tests"][:2])
     assert out["corrections_applied"][0]["adjust_method"] == "fdr_bh"
+
+
+def test_run_analysis_plan_never_produces_sparse_test_results():
+    data = {
+        "groups": {
+            "a": {"dnds": [0.10, 0.12, 0.09, 0.11]},
+            "b": {"dnds": [0.30, 0.35, 0.33, 0.31]},
+            "c": {"dnds": [0.50, 0.55, 0.53, 0.51]},
+        },
+        "variables": {
+            "x": [1, 2, 3, 4, 5, 6],
+            "y": [2, 4, 6, 8, 10, 12],
+            "values": [10, 11, 9, 10, 12, 8],
+        },
+        "tables": {"contingency": [[8, 2], [1, 9]], "rxc": [[10, 20, 30], [6, 9, 17]]},
+        "gene_index": ["G1", "G2", "G3"],
+    }
+    plan = {"tests_requested": [
+        {"test": "kruskal_wallis", "inputs": {"metric": "dnds", "groups": ["a", "b", "c"]}},
+        {"test": "mann_whitney_posthoc", "inputs": {"metric": "dnds", "groups": ["a", "b"]}},
+        {"test": "spearman", "inputs": {"x": "x", "y": "y"}},
+        {"test": "pearson", "inputs": {"x": "x", "y": "y"}},
+        {"test": "fisher_exact", "inputs": {"table": "contingency"}},
+        {"test": "chi_square", "inputs": {"table": "rxc"}},
+        {"test": "bootstrap_ci", "inputs": {"values": "values", "statistic": "mean"}},
+        {"test": "permutation_test", "inputs": {"a": "a.dnds", "b": "b.dnds"}},
+        {"test": "cliffs_delta", "inputs": {"a": "a.dnds", "b": "b.dnds"}},
+        {"test": "cohens_d", "inputs": {"a": "a.dnds", "b": "b.dnds"}},
+        {"test": "made_up_test", "inputs": {}},
+    ], "correction": "benjamini_hochberg"}
+
+    out = c.run_analysis_plan(plan, data)
+
+    assert len(out["tests"]) == len(plan["tests_requested"])
+    for result in out["tests"]:
+        assert_full_test_result(result)
+    assert out["tests"][-1]["available"] is False
 
 
 def test_leave_one_out_stable_when_signal_robust():

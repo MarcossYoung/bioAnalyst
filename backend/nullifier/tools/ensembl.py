@@ -5,7 +5,7 @@ import sys
 import time
 import threading
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ..config.loader import load_config
 
 HGNC_BASE = "https://rest.genenames.org"
@@ -71,7 +71,7 @@ def _alias_get(retired: str) -> str | None:
     if not row:
         return None
     cached_at = datetime.fromisoformat(row[1])
-    if datetime.utcnow() - cached_at > timedelta(days=cfg["cache_ttl_days"]):
+    if datetime.now(timezone.utc).replace(tzinfo=None) - cached_at > timedelta(days=cfg["cache_ttl_days"]):
         return None
     return row[0]
 
@@ -80,7 +80,7 @@ def _alias_set(retired: str, canonical: str):
     conn = _init_cache()
     conn.execute(
         "INSERT OR REPLACE INTO aliases (retired, canonical, cached_at) VALUES (?, ?, ?)",
-        (retired, canonical, datetime.utcnow().isoformat())
+        (retired, canonical, datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
     )
     conn.commit()
     conn.close()
@@ -121,7 +121,7 @@ def _cache_get(key: str, use_cache: bool) -> dict | None:
     if not row:
         return None
     cached_at = datetime.fromisoformat(row[1])
-    if datetime.utcnow() - cached_at > timedelta(days=cfg["cache_ttl_days"]):
+    if datetime.now(timezone.utc).replace(tzinfo=None) - cached_at > timedelta(days=cfg["cache_ttl_days"]):
         return None
     return json.loads(row[0])
 
@@ -130,7 +130,7 @@ def _cache_set(key: str, value: dict):
     conn = _init_cache()
     conn.execute(
         "INSERT OR REPLACE INTO cache (key, value, cached_at) VALUES (?, ?, ?)",
-        (key, json.dumps(value), datetime.utcnow().isoformat())
+        (key, json.dumps(value), datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
     )
     conn.commit()
     conn.close()
@@ -346,3 +346,102 @@ def get_motif_features(chromosome: str, start: int, end: int,
         }
         for f in data
     ]
+
+
+# === Compara metadata endpoints (Day 4) ===
+
+def fetch_orthologs_by_id(ensg_id: str, target_taxon: int = 40674,
+                           use_cache: bool = True) -> list[dict]:
+    """GET /homology/id/{ensg_id} — ENSG-based ortholog lookup.
+    Same return shape as get_orthologs; used as fallback when symbol lookup fails."""
+    data = _request(
+        f"/homology/id/{ensg_id}",
+        {"type": "orthologues", "target_taxon": target_taxon, "format": "full"},
+        use_cache,
+    )
+    if not data or not data.get("data"):
+        return []
+    homologies = data["data"][0].get("homologies", [])
+    out = []
+    for h in homologies:
+        target = h.get("target", {})
+        out.append({
+            "target_species": target.get("species"),
+            "target_id": target.get("id"),
+            "target_protein_id": target.get("protein_id"),
+            "ortholog_type": h.get("type"),
+            "perc_id": target.get("perc_id"),
+            "perc_pos": target.get("perc_pos"),
+            "dn": h.get("dn"),
+            "ds": h.get("ds"),
+            "dnds": (h["dn"] / h["ds"]) if (h.get("dn") and h.get("ds") and h["ds"] > 0) else None,
+            "method_link_type": h.get("method_link_type"),
+        })
+    return out
+
+
+def fetch_cds_sequence(ensg_id: str, use_cache: bool = True) -> str | None:
+    """GET /sequence/id/{ensg_id}?type=cds — canonical CDS for PAML alignment.
+    Returns raw nucleotide string or None on failure."""
+    data = _request(
+        f"/sequence/id/{ensg_id}",
+        {"type": "cds", "content_type": "application/json"},
+        use_cache,
+    )
+    if not data:
+        return None
+    return data.get("seq") or data.get("sequence")
+
+
+def fetch_gene_tree_aligned(ensembl_id: str, use_cache: bool = True) -> dict | None:
+    """GET /genetree/member/id/{ensembl_id} — Compara aligned CDS + Newick tree for PAML.
+
+    Returns {sequences: {species: cds_seq}, newick: str}, or None when the gene
+    has no Compara family or the alignment is empty.
+    Prunes to Mammalia (taxon 40674).
+    """
+    data = _request(
+        f"/genetree/member/id/{ensembl_id}",
+        {"sequence": "cdna", "aligned": 1, "nh_format": "simple",
+         "compara": "multi", "prune_taxon": 40674},
+        use_cache=use_cache,
+    )
+    if not data:
+        return None
+    sequences: dict = {}
+
+    def _walk(node: dict) -> None:
+        children = node.get("children") or []
+        if not children:  # leaf
+            sp = (node.get("taxonomy") or {}).get("scientific_name", "").replace(" ", "_")
+            seq = (node.get("sequence") or {}).get("mol_seq", {}).get("seq")
+            if sp and seq:
+                sequences[sp] = seq
+        for c in children:
+            _walk(c)
+
+    _walk(data.get("tree") or {})
+    newick = data.get("newick", "")
+    if not sequences:
+        return None
+    return {"sequences": sequences, "newick": newick}
+
+
+def fetch_compara_metadata(ensg_id: str, use_cache: bool = True) -> dict:
+    """GET /homology/id/{ensg_id}?format=condensed — Compara membership metadata.
+    Returns {in_compara, species_count, method_link_types}.
+    Used for failure diagnosis when ortholog fetch returns empty."""
+    data = _request(
+        f"/homology/id/{ensg_id}",
+        {"type": "orthologues", "format": "condensed"},
+        use_cache,
+    )
+    if not data or not data.get("data"):
+        return {"in_compara": False, "species_count": 0, "method_link_types": []}
+    homologies = data["data"][0].get("homologies", [])
+    method_types = list({h.get("method_link_type") for h in homologies if h.get("method_link_type")})
+    return {
+        "in_compara": True,
+        "species_count": len(homologies),
+        "method_link_types": method_types,
+    }

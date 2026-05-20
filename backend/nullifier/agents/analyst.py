@@ -1,45 +1,15 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from statistics import mean, stdev
 
 from ..tools.llm_client import llm_call_json
 from ..tools import ensembl
+from ..tools.gnomad import fetch_constraint
+from ..tools.phylo import lookup_phylo_age
+from ..tools.genomic_data import build_data, retrievable_summary
+from ..tools.compute import verify_reported_stats, _data_summary
 from .. import events as ev
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
-
-ANALYST_SPEC = AgentSpec(
-    name="genomic data analyst",
-    mission="Interpret genomic patterns from Ensembl-derived data and surface only conclusions grounded in the provided numbers.",
-    capabilities=(
-        "Summarize ortholog, paralog, duplication, and regulatory feature patterns.",
-        "Report pairwise regulatory overlap and per-gene outliers.",
-        "Cross-reference reported results against Ensembl-retrievable values when completed analyses are present.",
-    ),
-    behavioral_constraints=(
-        "Do not invent numbers.",
-        "Do not overstate what Ensembl can verify.",
-        "Return JSON only.",
-    ),
-    guarantees=(
-        "The output stays observational rather than pretending to be a phylogenetic comparative analysis.",
-    ),
-    verification_rules=(
-        "dN/dS values are pairwise human-vs-X and not branch-specific.",
-        "If reproducibility data is present, flag what is and is not checkable here.",
-    ),
-    output_contract=OutputContract(
-        summary="Genomic interpretation output.",
-        fields=(
-            OutputField("patterns_observed", "Observed patterns with support polarity and evidence."),
-            OutputField("outlier_genes", "Genes that stand out and why."),
-            OutputField("regulatory_overlap", "Shared TF motifs, Jaccard index, and interpretation."),
-            OutputField("reproducibility_check", "Cross-reference of reported findings against Ensembl values.", required=False),
-            OutputField("limitations", "Explicit limitations of the analysis."),
-            OutputField("overall_genomic_assessment", "supports, neutral, contradicts, or inconclusive."),
-            OutputField("assessment_justification", "Short justification for the overall assessment."),
-        ),
-    ),
-)
 
 ANALYST_SPLIT_SPEC = AgentSpec(
     name="genomic set splitter",
@@ -64,76 +34,126 @@ ANALYST_SPLIT_SPEC = AgentSpec(
 )
 
 
-def run_analyst(formalized: dict, use_cache: bool = True, on_gene=None, on_event=None) -> dict:
-    starter = formalized.get("starter_entities", [])
-    if not starter:
-        return {"skipped": True, "reason": "No starter entities provided in input."}
+def _fetch_gnomad_data(gene_data: dict) -> dict:
+    jobs = {sym: (d or {}).get("ensembl_id") for sym, d in gene_data.items()}
+    results: dict = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(fetch_constraint, ensg): sym
+                   for sym, ensg in jobs.items() if ensg}
+        for fut in as_completed(futures):
+            results[futures[fut]] = fut.result()
+    return results
 
-    set_a, set_b = _split_into_sets(formalized, starter)
 
-    gene_data = _fetch_all_gene_data(starter, use_cache, on_gene=on_gene, on_event=on_event)
+def _fetch_phylo_data(gene_data: dict) -> dict:
+    return {sym: lookup_phylo_age(sym) for sym in gene_data}
 
+
+def _fetch_paml_data(
+    gene_data: dict,
+    starter_genes: list[str],
+    foreground: str = "primates",
+    use_cache: bool = True,
+) -> dict:
+    from ..tools import paml
+    results = {}
+    for sym in starter_genes:
+        d = gene_data.get(sym, {})
+        if "_error" in d:
+            results[sym] = {"status": "error", "note": d["_error"]}
+            continue
+        ensg = (d.get("info") or {}).get("ensembl_id")
+        if not ensg:
+            results[sym] = {"status": "error", "note": "no ensembl_id"}
+            continue
+        aligned = ensembl.fetch_gene_tree_aligned(ensg, use_cache=use_cache)
+        if not aligned:
+            results[sym] = {"status": "no_compara_alignment", "gene": sym}
+            continue
+        results[sym] = paml.run_branch_model(
+            ensg, sym, aligned, foreground=foreground, use_cache=use_cache
+        )
+    return results
+
+
+def run_analyst(
+    all_targets: list,
+    expansion: dict,
+    formalized: dict,
+    starter_entities: list,
+    completed_analysis: list,
+    use_cache: bool = True,
+    on_event=None,
+) -> dict:
+    """Fetch all genomic data and build the typed data dict.
+
+    Returns {gene_data, data, data_summary, gnomad_data, phylo_data,
+             set_a, set_b, set_a_stats, set_b_stats, cross_set, reproducibility}.
+    Emits events via on_event callback throughout.
+    """
+    def _emit(e):
+        if on_event:
+            on_event(e)
+
+    _emit(ev.analyst_started(len(all_targets)))
+
+    gene_data = _fetch_all_gene_data(
+        all_targets, use_cache=use_cache,
+        on_gene=lambda g, s: _emit(ev.analyst_gene_fetched(g, s)),
+        starter_genes=set(expansion.get("starter", [])),
+        on_event=_emit,
+    )
+
+    gnomad_data = _fetch_gnomad_data(gene_data)
+    _emit(ev.analyst_gnomad_fetched(
+        sum(1 for v in gnomad_data.values() if v and v.get("loeuf") is not None),
+        len(gene_data),
+    ))
+
+    phylo_data = _fetch_phylo_data(gene_data)
+    _emit(ev.analyst_phylo_loaded(
+        sum(1 for v in phylo_data.values() if v and v.get("phylostratum") is not None),
+        len(gene_data),
+    ))
+
+    paml_data = _fetch_paml_data(gene_data, list(starter_entities), use_cache=use_cache)
+    _emit(ev.analyst_paml_complete(
+        sum(1 for v in paml_data.values() if v.get("status") == "computed"),
+        len(starter_entities),
+    ))
+
+    data = build_data(gene_data, expansion, gnomad_data=gnomad_data, phylo_data=phylo_data)
+
+    set_a, set_b = _split_into_sets(formalized, starter_entities)
     set_a_stats = _set_statistics(set_a, gene_data) if set_a else None
     set_b_stats = _set_statistics(set_b, gene_data) if set_b else None
     cross_set = _cross_set_analysis(set_a, set_b, gene_data) if (set_a and set_b) else None
 
-    reproducibility = _reproducibility_check(formalized, starter, gene_data)
-
-    task = _analyst_task(
-        formalized, set_a, set_b, gene_data, set_a_stats, set_b_stats, cross_set, reproducibility
-    )
-    interpretation = llm_call_json("analyst", ANALYST_SPEC.render_system_prompt(), task.render(), max_tokens=3500)
+    reproducibility = None
+    if completed_analysis:
+        _emit(ev.analyst_reproducibility_check_start(len(completed_analysis)))
+        reproducibility = verify_reported_stats(
+            completed_analysis,
+            retrievable_summary(gene_data),
+        )
+        _emit(ev.analyst_reproducibility_check_complete(
+            reproducibility.get("verifiable_count", 0),
+            reproducibility.get("total", len(completed_analysis)),
+        ))
 
     return {
-        "skipped": False,
+        "gene_data": gene_data,
+        "data": data,
+        "data_summary": _data_summary(data),
+        "gnomad_data": gnomad_data,
+        "phylo_data": phylo_data,
+        "paml_data": paml_data,
         "set_a": set_a,
         "set_b": set_b,
-        "gene_data": gene_data,
         "set_a_stats": set_a_stats,
         "set_b_stats": set_b_stats,
         "cross_set": cross_set,
         "reproducibility": reproducibility,
-        "interpretation": interpretation,
-    }
-
-
-_NOT_VERIFIABLE_HERE = [
-    "branch-specific / lineage-specific dN/dS (requires PAML/codeml on an alignment)",
-    "gene constraint scores (pLI / LOEUF - requires gnomAD)",
-    "custom statistical tests and their p-values (requires the raw study data)",
-    "sample-size adequacy and power (requires the study design)",
-    "expression / single-cell results (requires the relevant atlas, not Ensembl gene records)",
-]
-
-
-def _reproducibility_check(formalized: dict, genes: list[str], gene_data: dict) -> dict | None:
-    completed = formalized.get("completed_analysis") or []
-    if not completed:
-        return None
-
-    retrievable = {}
-    for g in genes:
-        d = gene_data.get(g, {})
-        if "_error" in d:
-            retrievable[g] = {"available": False, "reason": d["_error"]}
-            continue
-        dnds_vals = [o["dnds"] for o in d.get("orthologs", []) if o.get("dnds") is not None and o["dnds"] < 10]
-        retrievable[g] = {
-            "available": True,
-            "ortholog_count": len(d.get("orthologs", [])),
-            "paralog_count": len(d.get("paralogs", [])),
-            "duplication_count": (d.get("gene_tree") or {}).get("duplication_count", 0),
-            "regulatory_feature_count": len(d.get("regulatory_features", [])),
-            "mean_pairwise_dnds": round(mean(dnds_vals), 4) if dnds_vals else None,
-        }
-
-    verifiable_count = sum(1 for v in retrievable.values() if v.get("available"))
-    return {
-        "reported_findings": completed,
-        "ensembl_retrievable": retrievable,
-        "not_verifiable_here": _NOT_VERIFIABLE_HERE,
-        "verifiable_count": verifiable_count,
-        "total": len(completed),
     }
 
 
@@ -175,6 +195,15 @@ def _fetch_all_gene_data(
             on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
         canonical = info["symbol"]
         orthologs = ensembl.get_orthologs(canonical, use_cache=use_cache)
+        _homology_source = "symbol"
+        if not orthologs and info.get("ensembl_id"):
+            ensg_id = info["ensembl_id"]
+            orthologs = ensembl.fetch_orthologs_by_id(ensg_id, use_cache=use_cache)
+            if orthologs:
+                _homology_source = "ensg_fallback"
+            else:
+                meta = ensembl.fetch_compara_metadata(ensg_id, use_cache=use_cache)
+                _homology_source = "not_in_compara" if not (meta or {}).get("in_compara") else "no_mammal_orthologs"
         paralogs = ensembl.get_paralogs(canonical, use_cache=use_cache)
         tree = ensembl.get_gene_tree(canonical, use_cache=use_cache)
         reg = []
@@ -192,6 +221,7 @@ def _fetch_all_gene_data(
             "gene_tree": tree,
             "regulatory_features": reg,
             "motif_features": motifs,
+            "_homology_source": _homology_source,
         }
 
     def _light(g: str) -> tuple[str, dict]:
@@ -205,6 +235,15 @@ def _fetch_all_gene_data(
             on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
         canonical = info["symbol"]
         orthologs = ensembl.get_orthologs(canonical, use_cache=use_cache)
+        _homology_source = "symbol"
+        if not orthologs and info.get("ensembl_id"):
+            ensg_id = info["ensembl_id"]
+            orthologs = ensembl.fetch_orthologs_by_id(ensg_id, use_cache=use_cache)
+            if orthologs:
+                _homology_source = "ensg_fallback"
+            else:
+                meta = ensembl.fetch_compara_metadata(ensg_id, use_cache=use_cache)
+                _homology_source = "not_in_compara" if not (meta or {}).get("in_compara") else "no_mammal_orthologs"
         if on_gene:
             on_gene(g, "ok")
         return g, {
@@ -215,6 +254,7 @@ def _fetch_all_gene_data(
             "gene_tree": None,
             "regulatory_features": [],
             "motif_features": [],
+            "_homology_source": _homology_source,
         }
 
     def _dispatch(g: str) -> tuple[str, dict]:
@@ -275,74 +315,3 @@ def _cross_set_analysis(set_a: list[str], set_b: list[str], gene_data: dict) -> 
         "shared_tfs": sorted(intersection),
         "jaccard_index": jaccard,
     }
-
-
-def _analyst_task(
-    formalized,
-    set_a,
-    set_b,
-    gene_data,
-    set_a_stats,
-    set_b_stats,
-    cross_set,
-    reproducibility=None,
-):
-    evidence = [
-        f"Per-gene data:\n{_format_per_gene(gene_data)}",
-        f"Set A ({len(set_a)} genes) aggregate stats:\n{set_a_stats}",
-        f"Set B ({len(set_b)} genes) aggregate stats:\n{set_b_stats}" if set_b else "Set B: (none)",
-        f"Cross-set regulatory overlap:\n{cross_set}" if cross_set else "Cross-set overlap: (none)",
-    ]
-
-    context: dict = {
-        "set_a": f"{len(set_a)} genes: {', '.join(set_a)}",
-        "set_b": f"{len(set_b)} genes: {', '.join(set_b)}" if set_b else "(none)",
-    }
-    if reproducibility:
-        repro_lines = ["Reported findings:"]
-        for i, finding in enumerate(reproducibility["reported_findings"], 1):
-            entry = f"  {i}. {finding.get('finding', '')}"
-            if finding.get("statistic"):
-                entry += f"  [statistic: {finding['statistic']}]"
-            if finding.get("test"):
-                entry += f"  [test: {finding['test']}]"
-            if finding.get("sample_size"):
-                entry += f"  [n: {finding['sample_size']}]"
-            if finding.get("interpretation"):
-                entry += f"\n     author's interpretation: {finding['interpretation']}"
-            repro_lines.append(entry)
-        repro_lines.append("Ensembl-derivable values:")
-        for g, m in reproducibility["ensembl_retrievable"].items():
-            repro_lines.append(f"  {g}: {m}")
-        repro_lines.append("Not verifiable from Ensembl here:")
-        for nv in reproducibility["not_verifiable_here"]:
-            repro_lines.append(f"  - {nv}")
-        context["reproducibility_data"] = "\n".join(repro_lines)
-
-    return TaskObject(
-        title="Genomic data interpretation",
-        semantic_inputs={"core_hypothesis": formalized["core_hypothesis"]},
-        entities=tuple(set_a + (set_b or [])),
-        evidence=tuple(evidence),
-        contextual_state=context,
-        expected_outputs=tuple(field.name for field in ANALYST_SPEC.output_contract.fields),
-    )
-
-
-def _format_per_gene(gene_data: dict) -> str:
-    lines = []
-    for g, d in gene_data.items():
-        if "_error" in d:
-            lines.append(f"  {g}: NOT FOUND ({d['_error']})")
-            continue
-        n_orth = len(d["orthologs"])
-        n_par = len(d["paralogs"])
-        n_dup = (d["gene_tree"] or {}).get("duplication_count", 0)
-        n_reg = len(d["regulatory_features"])
-        dnds_vals = [o["dnds"] for o in d["orthologs"] if o.get("dnds") is not None and o["dnds"] < 10]
-        dnds_mean = f"{mean(dnds_vals):.3f}" if dnds_vals else "n/a"
-        lines.append(
-            f"  {g}: orthologs={n_orth}, paralogs={n_par}, duplications={n_dup}, "
-            f"regulatory_features={n_reg}, mean_dN/dS={dnds_mean}"
-        )
-    return "\n".join(lines)

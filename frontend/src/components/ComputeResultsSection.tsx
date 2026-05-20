@@ -1,6 +1,13 @@
 import { useState } from 'react'
 import type { ComputeTest, ComputeResult } from '../lib/types'
 
+const EFFECT_SIZE_GUIDES: Record<string, string> = {
+  omega_foreground: 'ω > 1: positive selection · ω < 1: purifying/neutral · ω = 1: neutral evolution',
+  cohens_d: 'Small ≥ 0.2 · Medium ≥ 0.5 · Large ≥ 0.8 (Cohen 1988)',
+  cliffs_delta: 'Small ≥ 0.147 · Medium ≥ 0.33 · Large ≥ 0.474 (Romano 2006)',
+  spearmans_rho: 'Weak < 0.3 · Moderate 0.3–0.7 · Strong > 0.7',
+}
+
 const SECTION_LABEL: React.CSSProperties = {
   fontSize: '10px', fontWeight: 600, letterSpacing: '0.08em',
   textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px',
@@ -42,7 +49,11 @@ function TestRow({ t }: { t: ComputeTest }) {
       </td>
       <td style={{ padding: '6px 8px', fontSize: '12px', fontFamily: 'ui-monospace, Consolas, monospace', textAlign: 'right', color: 'var(--text-muted)' }}>
         {t.effect_size !== null && t.effect_size !== undefined
-          ? `${t.effect_size.toFixed(3)}${t.effect_size_label ? ` (${t.effect_size_label})` : ''}`
+          ? (
+            <span title={t.effect_size_name ? (EFFECT_SIZE_GUIDES[t.effect_size_name] ?? t.effect_size_label ?? undefined) : (t.effect_size_label ?? undefined)}>
+              {t.effect_size.toFixed(3)}{t.effect_size_label ? ` (${t.effect_size_label})` : ''}
+            </span>
+          )
           : '—'}
       </td>
       <td style={{ padding: '6px 0', fontSize: '12px', fontFamily: 'ui-monospace, Consolas, monospace', color: 'var(--text-muted)', textAlign: 'right' }}>

@@ -79,14 +79,32 @@ def _build_user_prompt(
         "data_shape": (
             "groups: {<group>: {<metric>: [values]}} "
             "— names: starter, expanded.<set>, controls.<set>; "
-            "metrics: dnds, ortholog_count, paralog_count, duplication_count, regulatory_feature_count. "
-            "variables: {<metric>: [values aligned to gene_index]}. tables: typically empty."
+            "Ensembl metrics: dnds, ortholog_count, paralog_count, duplication_count, regulatory_feature_count. "
+            "gnomAD constraint (None when unavailable): "
+            "loeuf (LOEUF score — lower = more constrained, intolerant to LoF); "
+            "pli (pLI — probability of LoF intolerance, 0–1). "
+            "Phylostratigraphy (None when unavailable): "
+            "phylo_age (integer phylostratum, 1=oldest/most conserved, higher=more recently evolved; "
+            "Liebeskind 2016 consensus). "
+            "variables: same metrics as aligned vectors across gene_index. tables: typically empty."
         ),
         "prepared_groups": "\n".join(groups_lines) or "(none)",
         "prepared_variables": "\n".join(variables_lines) or "(none)",
         "gene_index_size": data_summary.get("n_genes", 0),
         "tables": data_summary.get("tables", []),
     }
+    gnomad_prov = data_summary.get("gnomad_coverage")
+    if gnomad_prov:
+        context["gnomad_coverage"] = (
+            f"LOEUF available for {gnomad_prov['genes_with_loeuf']} / "
+            f"{gnomad_prov['total_genes']} genes (gnomAD GRCh38)"
+        )
+    phylo_prov = data_summary.get("phylo_coverage")
+    if phylo_prov:
+        context["phylo_coverage"] = (
+            f"Phylostratigraphy (Liebeskind 2016) available for "
+            f"{phylo_prov['genes_with_age']} / {phylo_prov['total_genes']} genes"
+        )
     if completed_analysis:
         lines = []
         for i, finding in enumerate(completed_analysis, 1):

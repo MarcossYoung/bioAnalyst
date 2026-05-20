@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Iterable
 
+from .agents.semantic import AgentSpec, OutputContract, OutputField
+
 PIPELINE_VERSION = "v6.0.0"
 CALIBRATION_NOTE = "Heuristic score, not a calibrated probability."
 
@@ -84,23 +86,32 @@ def attach(target, prov: dict):
 
 
 # ── enrichment (batched Gemma pass) ─────────────────────────────────────────
-_ENRICH_SYSTEM = """You enrich a structured provenance record for a Nullifier v6 output.
-
-You receive: (1) the partially-filled provenance, (2) a short context blob (the agent's
-actual output the provenance describes), and (3) the surrounding inputs the agent saw.
-
-Fill ONLY the four enrichable fields, leaving anything else untouched. Be concrete and
-brief — these go into a UI chip, not a paragraph:
-
-  triggered_by   — list[str]: ids/refs of the specific inputs that caused this output
-                   (e.g. claim ids, paper ids, gene symbols, GO terms, test names).
-  evidence_refs  — list[str]: external references the output ultimately rests on
-                   (paper titles, DOIs, gene set names, Ensembl, GO terms, statistic names).
-  method         — str: one short clause describing how the output was produced.
-  confidence     — float 0..1: a calibrated guess at how trustworthy this single output is.
-                   Be honest — 0.4-0.6 is the right range for most LLM judgments.
-
-Respond with ONLY valid JSON: {"triggered_by":[...], "evidence_refs":[...], "method":"...", "confidence":0.0}"""
+PROVENANCE_ENRICHER_SPEC = AgentSpec(
+    name="provenance enricher",
+    mission="Fill four enrichable fields of a structured provenance record from the output and context it describes.",
+    capabilities=(
+        "Identify the specific inputs (claim ids, gene symbols, etc.) that triggered the output.",
+        "List external references the output rests on (papers, DOIs, gene sets, Ensembl, statistic names).",
+        "Summarize the method used to produce the output in one short clause.",
+        "Calibrate a confidence score for the output.",
+    ),
+    behavioral_constraints=(
+        "Fill ONLY triggered_by, evidence_refs, method, and confidence — leave all other fields untouched.",
+        "Be concrete and brief — these go into a UI chip, not a paragraph.",
+        "For confidence: be honest — 0.4–0.6 is the right range for most LLM judgments.",
+        "Respond with ONLY valid JSON.",
+    ),
+    output_contract=OutputContract(
+        summary="Enriched provenance fields only.",
+        fields=(
+            OutputField("triggered_by", "list[str]: ids/refs of specific inputs that caused this output."),
+            OutputField("evidence_refs", "list[str]: external references the output ultimately rests on."),
+            OutputField("method", "str: one short clause describing how the output was produced."),
+            OutputField("confidence", "float 0..1: calibrated trustworthiness of this single output."),
+        ),
+    ),
+)
+PROVENANCE_ENRICHER_SYSTEM = PROVENANCE_ENRICHER_SPEC.render_system_prompt()
 
 
 def _enrich_one(prov: dict, output_blob: Any, context_blob: Any) -> dict:
@@ -109,7 +120,7 @@ def _enrich_one(prov: dict, output_blob: Any, context_blob: Any) -> dict:
             f"OUTPUT THE PROVENANCE DESCRIBES:\n{json.dumps(output_blob, default=str)[:1200]}\n\n"
             f"SURROUNDING CONTEXT:\n{json.dumps(context_blob, default=str)[:1500]}\n")
     try:
-        out = llm_call_json("provenance_enrichment", _ENRICH_SYSTEM, user, max_tokens=400)
+        out = llm_call_json("provenance_enrichment", PROVENANCE_ENRICHER_SYSTEM, user, max_tokens=400)
     except Exception:
         return prov  # leave as-is on failure — never block the pipeline
     enriched = dict(prov)

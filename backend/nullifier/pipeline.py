@@ -3,23 +3,13 @@ from typing import Callable, Generator
 from . import events as ev
 from .agents.formalizer import formalize_stage1, formalize_stage2
 from .agents.librarian import retrieve_evidence
-from .agents.analyst import (
-    _fetch_all_gene_data,
-    _split_into_sets,
-    _set_statistics,
-    _cross_set_analysis,
-)
+from .agents.analyst import run_analyst
+from .agents.compute import run_compute
 from .agents.methodologist import run_methodologist
 from .agents.interpreter import run_interpreter
 from .agents.skeptic import stress_test
 from .tools import gene_sets
-from .tools.compute import (
-    run_analysis_plan,
-    leave_one_out,
-    verify_reported_stats,
-    _data_summary,
-)
-from .tools.genomic_data import build_data, retrievable_summary
+from .tools.genomic_data import build_data
 from .tools.llm_client import TRACKER
 
 
@@ -96,7 +86,7 @@ def run_pipeline(
         yield ev.token_update(TRACKER)
         yield ev.stage_completed("librarian")
 
-        # ── v6 Analyst stage: expand → fetch → methodologist → compute → robustness → interpret ──
+        # ── v6 Analyst stage: expand → fetch → methodologist → compute → interpret ──
         if _cancelled():
             yield ev.run_aborted()
             return
@@ -119,107 +109,74 @@ def run_pipeline(
             else:
                 yield ev.gene_sets_expanded(expansion)
 
-                # 2. Fetch Ensembl data for every gene we'll touch (starter + expanded + controls)
-                all_targets = gene_sets.all_genes(expansion)
-                gene_count = len(all_targets)
-                yield ev.analyst_started(gene_count)
-
+                # 2. Fetch all genomic data
                 analyst_events: list[ev.Event] = []
-                gene_data = _fetch_all_gene_data(
-                    all_targets,
-                    use_cache=True,
-                    on_gene=lambda g, s: analyst_events.append(ev.analyst_gene_fetched(g, s)),
-                    starter_genes=set(expansion.get("starter", [])),
+                analyst_data = run_analyst(
+                    all_targets=gene_sets.all_genes(expansion),
+                    expansion=expansion,
+                    formalized=formalized,
+                    starter_entities=starter_entities,
+                    completed_analysis=completed_analysis,
                     on_event=analyst_events.append,
                 )
                 for e in analyst_events:
                     yield e
 
-                # 3. Build typed `data` dict and ask Methodologist for a plan
-                data = build_data(gene_data, expansion)
+                analyst_data["data"]["paml"] = analyst_data.get("paml_data", {})
+
+                # 3. Methodologist
                 plan = run_methodologist(
-                    formalized,
-                    expansion,
-                    _data_summary(data),
+                    formalized, expansion, analyst_data["data_summary"],
                     completed_analysis=completed_analysis,
                 )
                 yield ev.methodologist_plan_complete(plan)
                 yield ev.token_update(TRACKER)
 
-                # 4. Run the Compute layer deterministically
-                requested = plan.get("tests_requested") or []
-                yield ev.compute_start(len(requested))
-                compute_results = run_analysis_plan(plan, data)
-                for t in compute_results.get("tests") or []:
-                    name = t.get("test") or t.get("requested", "?")
-                    sig = t.get("significant_adjusted")
-                    if sig is None:
-                        sig = t.get("significant")
-                    yield ev.compute_test_complete(name, t.get("p_value"), sig)
-                yield ev.compute_all_complete(
-                    len(compute_results.get("tests") or []),
-                    compute_results.get("corrections_applied") or [],
+                # 4–5. Compute + Robustness
+                compute_events: list[ev.Event] = []
+                compute_result = run_compute(
+                    plan=plan,
+                    data=analyst_data["data"],
+                    starter_entities=starter_entities,
+                    rebuild_data=lambda excl: build_data(
+                        analyst_data["gene_data"], expansion, exclude=excl,
+                        gnomad_data=analyst_data["gnomad_data"],
+                        phylo_data=analyst_data["phylo_data"],
+                    ),
+                    on_event=compute_events.append,
                 )
+                for e in compute_events:
+                    yield e
 
-                # 5. Robustness — leave-one-out on the starter set
-                primary = plan.get("primary_tests") or []
-                yield ev.compute_robustness_start(len(starter_entities))
-                robustness = leave_one_out(
-                    starter_entities,
-                    primary,
-                    rebuild_data=lambda excl: build_data(gene_data, expansion, exclude=excl),
-                )
-                yield ev.compute_robustness_complete(
-                    robustness.get("stability", "unknown"),
-                    robustness.get("agreement_fraction", 0.0),
-                    robustness.get("most_influential_genes") or [],
-                )
-
-                # 6. Reproducibility check (deterministic) — only if author reported analyses
-                reproducibility = None
-                if completed_analysis:
-                    yield ev.analyst_reproducibility_check_start(len(completed_analysis))
-                    reproducibility = verify_reported_stats(
-                        completed_analysis,
-                        retrievable_summary(gene_data),
-                    )
-                    yield ev.analyst_reproducibility_check_complete(
-                        reproducibility.get("verifiable_count", 0),
-                        reproducibility.get("total", len(completed_analysis)),
-                    )
-
-                # 7. Interpreter — Claude reads typed Compute output
+                # 6. Interpreter
                 yield ev.interpreter_start()
                 interpretation = run_interpreter(
-                    formalized, expansion, compute_results, gene_data,
-                    robustness=robustness, reproducibility=reproducibility,
+                    formalized, expansion,
+                    compute_result["compute_results"],
+                    analyst_data["gene_data"],
+                    robustness=compute_result["robustness"],
+                    reproducibility=analyst_data["reproducibility"],
                 )
                 assessment = interpretation.get("overall_genomic_assessment", "inconclusive")
                 yield ev.interpreter_complete(assessment)
                 yield ev.analyst_ready(assessment)
 
-                # 8. Compatibility shims so the existing Skeptic prompt still sees its inputs
-                set_a, set_b = _split_into_sets(formalized, starter_entities)
-                set_a_stats = _set_statistics(set_a, gene_data) if set_a else None
-                set_b_stats = _set_statistics(set_b, gene_data) if set_b else None
-                cross_set = (_cross_set_analysis(set_a, set_b, gene_data)
-                             if (set_a and set_b) else None)
-
                 analyst_result = {
                     "skipped": False,
                     "expansion": expansion,
-                    "gene_data": gene_data,
+                    "gene_data": analyst_data["gene_data"],
                     "plan": plan,
-                    "compute_results": compute_results,
-                    "robustness": robustness,
-                    "reproducibility": reproducibility,
+                    "compute_results": compute_result["compute_results"],
+                    "robustness": compute_result["robustness"],
+                    "reproducibility": analyst_data["reproducibility"],
                     "interpretation": interpretation,
-                    # legacy shims used by Skeptic prompt formatting
-                    "set_a": set_a,
-                    "set_b": set_b,
-                    "set_a_stats": set_a_stats,
-                    "set_b_stats": set_b_stats,
-                    "cross_set": cross_set,
+                    "set_a": analyst_data["set_a"],
+                    "set_b": analyst_data["set_b"],
+                    "set_a_stats": analyst_data["set_a_stats"],
+                    "set_b_stats": analyst_data["set_b_stats"],
+                    "cross_set": analyst_data["cross_set"],
+                    "phylo_data": analyst_data["phylo_data"],
+                    "data_provenance": analyst_data["data"].get("provenance"),
                 }
 
                 yield ev.token_update(TRACKER)

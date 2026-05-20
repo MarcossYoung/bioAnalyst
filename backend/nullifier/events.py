@@ -159,6 +159,24 @@ def analyst_symbol_resolved(retired: str, canonical: str) -> Event:
     return Event("analyst_symbol_resolved", {"retired": retired, "canonical": canonical})
 
 
+def analyst_phylo_loaded(genes_with_age: int, total_genes: int) -> Event:
+    return Event("analyst_phylo_loaded", {
+        "genes_with_age": genes_with_age,
+        "total_genes": total_genes,
+    })
+
+
+def analyst_gnomad_fetched(genes_with_loeuf: int, total_genes: int) -> Event:
+    return Event("analyst_gnomad_fetched", {
+        "genes_with_loeuf": genes_with_loeuf,
+        "total_genes": total_genes,
+    })
+
+
+def analyst_paml_complete(n_computed: int, total: int) -> Event:
+    return Event("analyst_paml_complete", {"n_computed": n_computed, "total": total})
+
+
 def analyst_ready(assessment: str) -> Event:
     return Event("analyst_ready", {"overall_genomic_assessment": assessment})
 

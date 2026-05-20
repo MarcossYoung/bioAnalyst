@@ -82,11 +82,7 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
         formalized.get("key_entities", []) + formalized.get("starter_entities", []),
     )
     flags_section = format_flags_for_prompt(relevant_flags)
-    per_paper_system = (
-        flags_section + "\n\n" + LIBRARIAN_PAPER_SPEC.render_system_prompt()
-        if flags_section
-        else LIBRARIAN_PAPER_SPEC.render_system_prompt()
-    )
+    per_paper_system = LIBRARIAN_PAPER_SPEC.render_system_prompt()
 
     health = SourceHealth()
 
@@ -151,7 +147,7 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
             on_event(ev.papers_retrieved(claim["id"], len(all_papers)))
 
         per_paper_inputs = [
-            (per_paper_system, _build_per_paper_input(claim, p), 800)
+            (per_paper_system, _build_per_paper_input(claim, p, flags_section), 800)
             for p in all_papers
         ]
         classifications_raw = llm_call_json_batch("librarian_per_paper", per_paper_inputs)
@@ -180,17 +176,24 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
             if on_event:
                 on_event(ev.paper_classified(claim["id"], paper["title"], entry["classification"]))
 
+        cls_entries = tuple(
+            f"[{c['classification']}] {c['paper_title']} ({c.get('year', '?')})\n"
+            f"  Quote: \"{c['justification_quote']}\"\n"
+            f"  Reasoning: {c['reasoning']}"
+            for c in classifications
+        ) or ("(no papers classified)",)
+
         synth_task = TaskObject(
             title="Claim-level literature synthesis",
             semantic_inputs={"claim": claim},
-            evidence=tuple(c["paper_title"] for c in classifications),
+            evidence=cls_entries,
             contextual_state={"claim_id": claim["id"]},
             expected_outputs=("confounders_identified", "evidence_strength", "novelty_flag", "literature_gap", "synthesis"),
         )
         synthesis = llm_call_json(
             "librarian_synthesizer",
             LIBRARIAN_SYNTHESIS_SPEC.render_system_prompt(),
-            synth_task.render() + "\n\n" + _build_synthesizer_input(claim, classifications),
+            synth_task.render(),
             max_tokens=2000,
         )
 
@@ -219,30 +222,16 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
     }
 
 
-def _build_per_paper_input(claim: dict, paper: dict) -> str:
+def _build_per_paper_input(claim: dict, paper: dict, flags_section: str = "") -> str:
+    cs: dict = {"year": paper.get("year", "?"), "source": paper.get("source", "")}
+    if flags_section:
+        cs["prior_review_flags"] = flags_section
     task = TaskObject(
         title="Per-paper classification",
         semantic_inputs={"claim": claim["statement"], "null_hypothesis": claim["null_hypothesis"]},
         evidence=(paper.get("title", ""), paper.get("abstract", "")[:2000]),
-        contextual_state={"year": paper.get("year", "?"), "source": paper.get("source", "")},
+        contextual_state=cs,
         constraints=("Quote the exact abstract sentence that justifies the classification.",),
         expected_outputs=("classification", "justification_quote", "reasoning"),
     )
     return task.render()
-
-
-def _build_synthesizer_input(claim: dict, classifications: list[dict]) -> str:
-    cls_str = "\n".join(
-        f"- [{c['classification']}] {c['paper_title']} ({c.get('year', '?')})\n"
-        f"  Quote: \"{c['justification_quote']}\"\n"
-        f"  Reasoning: {c['reasoning']}"
-        for c in classifications
-    ) or "(no papers classified)"
-
-    return f"""ATOMIC CLAIM: {claim['statement']}
-NULL HYPOTHESIS: {claim['null_hypothesis']}
-CONTEXT: {claim.get('context', '')}
-
-PER-PAPER CLASSIFICATIONS:
-{cls_str}
-"""
