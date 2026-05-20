@@ -6,6 +6,7 @@ import time
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from ..config.loader import load_config
 
 HGNC_BASE = "https://rest.genenames.org"
@@ -111,7 +112,7 @@ def _hgnc_canonical(symbol: str) -> str | None:
     return None
 
 
-def _cache_get(key: str, use_cache: bool) -> dict | None:
+def _cache_get(key: str, use_cache: bool) -> Any | None:
     if not use_cache:
         return None
     cfg = _get_cfg()
@@ -123,10 +124,14 @@ def _cache_get(key: str, use_cache: bool) -> dict | None:
     cached_at = datetime.fromisoformat(row[1])
     if datetime.now(timezone.utc).replace(tzinfo=None) - cached_at > timedelta(days=cfg["cache_ttl_days"]):
         return None
-    return json.loads(row[0])
+    try:
+        return json.loads(row[0])
+    except json.JSONDecodeError as e:
+        print(f"[ensembl] ignoring malformed cache entry for {key}: {e}", file=sys.stderr)
+        return None
 
 
-def _cache_set(key: str, value: dict):
+def _cache_set(key: str, value: Any):
     conn = _init_cache()
     conn.execute(
         "INSERT OR REPLACE INTO cache (key, value, cached_at) VALUES (?, ?, ?)",
@@ -136,30 +141,41 @@ def _cache_set(key: str, value: dict):
     conn.close()
 
 
-def _request(path: str, params: dict = None, use_cache: bool = True) -> dict | None:
+def _ensembl_base_urls(cfg: dict) -> list[str]:
+    urls = [cfg["base_url"]]
+    for url in cfg.get("fallback_base_urls", []):
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _request(path: str, params: dict = None, use_cache: bool = True) -> Any | None:
     cfg = _get_cfg()
     cache_key = f"{path}?{json.dumps(params or {}, sort_keys=True)}"
     cached = _cache_get(cache_key, use_cache)
     if cached is not None:
         return cached
 
-    _rate_limit()
-    try:
-        url = f"{cfg['base_url']}{path}"
-        r = requests.get(url, params=params or {},
-                         headers={"Accept": "application/json"}, timeout=20)
-        if r.status_code == 429:
-            retry_after = int(r.headers.get("Retry-After", "5"))
-            time.sleep(retry_after)
+    for base_url in _ensembl_base_urls(cfg):
+        _rate_limit()
+        try:
+            url = f"{base_url}{path}"
             r = requests.get(url, params=params or {},
                              headers={"Accept": "application/json"}, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        _cache_set(cache_key, data)
-        return data
-    except Exception as e:
-        print(f"[ensembl] {path} failed: {e}")
-        return None
+            if r.status_code == 429:
+                retry_after = int(r.headers.get("Retry-After", "5"))
+                time.sleep(retry_after)
+                r = requests.get(url, params=params or {},
+                                 headers={"Accept": "application/json"}, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            _cache_set(cache_key, data)
+            if base_url != cfg["base_url"]:
+                print(f"[ensembl] {path} resolved via fallback {base_url}", file=sys.stderr)
+            return data
+        except Exception as e:
+            print(f"[ensembl] {base_url}{path} failed: {e}", file=sys.stderr)
+    return None
 
 
 # === Public API: 5 endpoints ===
@@ -447,9 +463,18 @@ def fetch_compara_metadata(ensg_id: str, use_cache: bool = True) -> dict:
     }
 
 
-def fetch_compara_methods(use_cache: bool = True) -> list[dict]:
+def fetch_compara_methods(
+    use_cache: bool = True,
+    class_filter: str | None = None,
+    compara: str | None = None,
+) -> list[dict]:
     """GET /info/compara/methods/ — available Compara alignment/homology methods."""
-    data = _request("/info/compara/methods/", {}, use_cache)
+    params = {}
+    if class_filter:
+        params["class"] = class_filter
+    if compara:
+        params["compara"] = compara
+    data = _request("/info/compara/methods/", params, use_cache)
     if isinstance(data, dict):
         return [
             {"category": category, "method": method}
@@ -459,9 +484,14 @@ def fetch_compara_methods(use_cache: bool = True) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
-def fetch_compara_species_sets(method: str = "EPO", use_cache: bool = True) -> list[dict]:
+def fetch_compara_species_sets(
+    method: str = "EPO",
+    use_cache: bool = True,
+    compara: str | None = None,
+) -> list[dict]:
     """GET /info/compara/species_sets/{method} — species in a named alignment."""
-    data = _request(f"/info/compara/species_sets/{method}", {}, use_cache)
+    params = {"compara": compara} if compara else {}
+    data = _request(f"/info/compara/species_sets/{method}", params, use_cache)
     return data if isinstance(data, list) else []
 
 

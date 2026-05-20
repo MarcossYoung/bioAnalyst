@@ -4,7 +4,8 @@
       "Bash(node C:/Users/marco/Dev/FrameWorks/thebrain/scripts/session-id.js)",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\marco\\\\Dev\\\\Projects\\\\bioAnalyst\" -Recurse -File -Name)",
       "Bash(Select-Object -First 50)",
-      "Bash(node \"C:\\\\Users\\\\marco\\\\Dev\\\\FrameWorks\\\\thebrain/hippocampus/scripts/query.js\" --map bioAnalyst)"
+      "Bash(node \"C:\\\\Users\\\\marco\\\\Dev\\\\FrameWorks\\\\thebrain/hippocampus/scripts/query.js\" --map bioAnalyst)",
+      "WebFetch(domain:rest.ensembl.org)"
     ]
   }
 }

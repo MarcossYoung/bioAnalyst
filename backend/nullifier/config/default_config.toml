@@ -34,6 +34,7 @@ skeptic               = "claude"   # Reasoning-heavy stress test
 
 [ensembl]
 base_url = "https://rest.ensembl.org"
+fallback_base_urls = []
 rate_limit_per_second = 14  # Ensembl allows 15; we stay 1 under
 cache_ttl_days = 30
 cache_path = "~/.nullifier/ensembl_cache.db"

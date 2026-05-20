@@ -79,6 +79,26 @@ def test_fetch_orthologs_by_id_returns_empty_on_error(tmp_path, monkeypatch):
         assert result == []
 
 
+def test_fetch_orthologs_by_id_uses_fallback_base_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "fallback_base_urls": ["https://grch37.rest.ensembl.org"],
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    with patch(
+        "nullifier.tools.ensembl.requests.get",
+        side_effect=[ConnectionError("down"), _mock_resp(_FAKE_HOMOLOGY_BODY)],
+    ) as mock_get:
+        result = e.fetch_orthologs_by_id("ENSG00000000002")
+
+    assert len(result) == 1
+    assert mock_get.call_count == 2
+    assert mock_get.call_args_list[0].args[0] == "https://rest.ensembl.org/homology/id/ENSG00000000002"
+    assert mock_get.call_args_list[1].args[0] == "https://grch37.rest.ensembl.org/homology/id/ENSG00000000002"
+
+
 def test_fetch_orthologs_by_id_empty_data(tmp_path, monkeypatch):
     monkeypatch.setattr(e, "_cfg", {
         "base_url": "https://rest.ensembl.org",
@@ -161,3 +181,55 @@ def test_fetch_compara_metadata_returns_not_in_compara_on_error(tmp_path, monkey
     with patch("nullifier.tools.ensembl.requests.get", side_effect=ConnectionError("down")):
         meta = e.fetch_compara_metadata("ENSG00000000008")
         assert meta["in_compara"] is False
+
+
+def test_fetch_compara_methods_flattens_grouped_response(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    body = {
+        "Homology.homology": ["ENSEMBL_ORTHOLOGUES", "ENSEMBL_PARALOGUES"],
+        "GenomicAlignTree.tree_alignment": ["EPO_EXTENDED"],
+    }
+    with patch("nullifier.tools.ensembl.requests.get", return_value=_mock_resp(body)) as mock_get:
+        methods = e.fetch_compara_methods(class_filter="Homology", compara="vertebrates")
+
+    assert methods == [
+        {"category": "Homology.homology", "method": "ENSEMBL_ORTHOLOGUES"},
+        {"category": "Homology.homology", "method": "ENSEMBL_PARALOGUES"},
+        {"category": "GenomicAlignTree.tree_alignment", "method": "EPO_EXTENDED"},
+    ]
+    assert mock_get.call_args.kwargs["params"] == {
+        "class": "Homology",
+        "compara": "vertebrates",
+    }
+
+
+def test_fetch_compara_species_sets_accepts_compara_param(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    body = [{"method": "EPO", "name": "10 primates EPO"}]
+    with patch("nullifier.tools.ensembl.requests.get", return_value=_mock_resp(body)) as mock_get:
+        species_sets = e.fetch_compara_species_sets(compara="vertebrates")
+
+    assert species_sets == body
+    assert mock_get.call_args.kwargs["params"] == {"compara": "vertebrates"}
+
+
+def test_fetch_comparas_unwraps_current_api_response(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    body = {"comparas": [{"name": "vertebrates", "release": 115}]}
+    with patch("nullifier.tools.ensembl.requests.get", return_value=_mock_resp(body)):
+        assert e.fetch_comparas() == body["comparas"]
