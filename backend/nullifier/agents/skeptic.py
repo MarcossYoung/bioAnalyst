@@ -110,7 +110,7 @@ def stress_test(formalized: dict, evidence: dict, analyst_result: dict | None = 
             f"  H0: {claim['null_hypothesis']}\n"
             f"  Librarian: strength={assessment.get('evidence_strength', '?')}, "
             f"novelty={assessment.get('novelty_flag', '?')}\n"
-            f"  Confounders: {[c['confounder'] for c in assessment.get('confounders_identified', [])]}\n"
+            f"  Confounders: {assessment.get('confounders_identified', '')}\n"
             f"  Top retrieved abstracts for your sanity-check:\n" + "\n".join(top_abstracts)
         )
 

@@ -1,9 +1,63 @@
+import { useState, useEffect } from 'react'
 import type { WsEvent } from '../lib/types'
 import { formatTime } from '../lib/utils'
 
-interface EventTimelineProps {
-  events: WsEvent[]
+// ── Stage definitions ────────────────────────────────────────────────────────
+
+const STAGE_KEY: Record<string, string> = {
+  run_started: 'meta', stage_started: 'meta', stage_completed: 'meta',
+  token_update: 'meta', run_completed: 'meta', run_failed: 'meta', run_aborted: 'meta',
+  hypothesis_extracted: 'formalizer', confirmation_required: 'formalizer',
+  confirmation_received: 'formalizer', formalizer_detected_completed_analysis: 'formalizer',
+  claims_formalized: 'formalizer',
+  queries_expanded: 'librarian', papers_retrieved: 'librarian',
+  paper_classified: 'librarian', synthesis_ready: 'librarian',
+  analyst_started: 'analyst', analyst_gene_fetched: 'analyst',
+  analyst_symbol_resolved: 'analyst', analyst_phylo_loaded: 'analyst',
+  analyst_gnomad_fetched: 'analyst', analyst_paml_complete: 'analyst',
+  analyst_ready: 'analyst', analyst_skipped: 'analyst',
+  analyst_reproducibility_check_start: 'analyst', analyst_reproducibility_check_complete: 'analyst',
+  gene_sets_expanded: 'methodologist', methodologist_plan_complete: 'methodologist',
+  compute_start: 'compute', compute_test_complete: 'compute', compute_all_complete: 'compute',
+  compute_robustness_start: 'robustness', compute_robustness_complete: 'robustness',
+  interpreter_start: 'interpreter', interpreter_complete: 'interpreter',
+  skeptic_critique_mode_active: 'skeptic', verdict_ready: 'skeptic',
 }
+
+const STAGE_ORDER = [
+  'meta', 'formalizer', 'librarian', 'analyst',
+  'methodologist', 'compute', 'robustness', 'interpreter', 'skeptic',
+]
+
+const STAGE_LABEL: Record<string, string> = {
+  meta: 'Run', formalizer: 'Formalizer', librarian: 'Librarian',
+  analyst: 'Analyst', methodologist: 'Methodologist', compute: 'Compute',
+  robustness: 'Robustness', interpreter: 'Interpreter', skeptic: 'Skeptic',
+}
+
+const STAGE_COLOR: Record<string, string> = {
+  meta: '#cbd5e1', formalizer: '#cbd5e1', librarian: '#cbd5e1',
+  analyst: '#67e8f9', methodologist: '#a5b4fc', compute: '#a5b4fc',
+  robustness: '#a5b4fc', interpreter: '#67e8f9', skeptic: '#fcd34d',
+}
+
+const STAGE_TERMINALS: Record<string, string[]> = {
+  formalizer: ['claims_formalized'],
+  librarian: ['synthesis_ready'],
+  analyst: ['analyst_ready', 'analyst_skipped'],
+  methodologist: ['methodologist_plan_complete'],
+  compute: ['compute_all_complete'],
+  robustness: ['compute_robustness_complete'],
+  interpreter: ['interpreter_complete'],
+  skeptic: ['verdict_ready'],
+  meta: ['run_completed', 'run_failed', 'run_aborted'],
+}
+
+function isDone(stage: string, eventTypes: Set<string>): boolean {
+  return (STAGE_TERMINALS[stage] ?? []).some(t => eventTypes.has(t))
+}
+
+// ── Event label / color (unchanged logic) ────────────────────────────────────
 
 function eventLabel(ev: WsEvent): string {
   const p = ev.payload as Record<string, unknown>
@@ -56,28 +110,112 @@ function rowColor(type: string): string {
   return '#cbd5e1'
 }
 
+// ── Component ────────────────────────────────────────────────────────────────
+
+interface EventTimelineProps {
+  events: WsEvent[]
+}
+
 export function EventTimeline({ events }: EventTimelineProps) {
+  // Group events by stage
+  const groups = new Map<string, WsEvent[]>()
+  for (const ev of events) {
+    const stage = STAGE_KEY[ev.type] ?? 'meta'
+    if (!groups.has(stage)) groups.set(stage, [])
+    groups.get(stage)!.push(ev)
+  }
+
+  const seenTypes = new Set(events.map(e => e.type))
+
+  // Collapsed state: auto-collapse completed stages
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    const init = new Set<string>()
+    for (const stage of STAGE_ORDER) {
+      if (isDone(stage, seenTypes)) init.add(stage)
+    }
+    return init
+  })
+
+  useEffect(() => {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      for (const stage of STAGE_ORDER) {
+        if (!next.has(stage) && isDone(stage, seenTypes)) next.add(stage)
+      }
+      return next
+    })
+  }, [events])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  function toggle(stage: string) {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      next.has(stage) ? next.delete(stage) : next.add(stage)
+      return next
+    })
+  }
+
+  const activeStages = STAGE_ORDER.filter(s => groups.has(s))
+
   return (
     <div className="log-mono" style={{ color: '#cbd5e1' }}>
-      {events.map((ev) => (
-        <div
-          key={ev.seq}
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '64px 1fr',
-            gap: '6px',
-            padding: '1px 0',
-            color: rowColor(ev.type),
-          }}
-        >
-          <span style={{ color: '#475569', userSelect: 'none' }}>
-            {formatTime(ev.ts)}
-          </span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {eventLabel(ev)}
-          </span>
-        </div>
-      ))}
+      {activeStages.map(stage => {
+        const stageEvents = groups.get(stage)!
+        const isCollapsed = collapsed.has(stage)
+        const done = isDone(stage, seenTypes)
+        const accent = STAGE_COLOR[stage]
+
+        return (
+          <div key={stage} style={{ marginBottom: '2px' }}>
+            {/* Section header */}
+            <button
+              onClick={() => toggle(stage)}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '14px 1fr auto',
+                gap: '4px',
+                width: '100%',
+                background: 'none',
+                border: 'none',
+                padding: '3px 0',
+                cursor: 'pointer',
+                textAlign: 'left',
+                opacity: isCollapsed && done ? 0.55 : 1,
+              }}
+            >
+              <span style={{ color: 'var(--oxford, #1e3a5f)', fontSize: '10px', lineHeight: '14px' }}>
+                {isCollapsed ? '▶' : '▼'}
+              </span>
+              <span style={{ color: accent, fontSize: '11px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {STAGE_LABEL[stage]}
+              </span>
+              <span style={{ color: '#475569', fontSize: '10px', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                {stageEvents.length}
+              </span>
+            </button>
+
+            {/* Events */}
+            {!isCollapsed && stageEvents.map(ev => (
+              <div
+                key={ev.seq}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '64px 1fr',
+                  gap: '6px',
+                  padding: '1px 0 1px 14px',
+                  color: rowColor(ev.type),
+                }}
+              >
+                <span style={{ color: '#475569', userSelect: 'none' }}>
+                  {formatTime(ev.ts)}
+                </span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {eventLabel(ev)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )
+      })}
     </div>
   )
 }
