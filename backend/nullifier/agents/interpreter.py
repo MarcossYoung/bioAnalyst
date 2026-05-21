@@ -23,16 +23,18 @@ INTERPRETER_SPEC = AgentSpec(
         "Every numeric claim must trace back to a value in the inputs.",
         "For each available computed test, cite the typed effect_size/effect_size_label fields and ci_lower/ci_upper fields when interpreting the result.",
         "If an available computed test has null effect-size or confidence-interval fields, state that the typed result does not provide them instead of inventing them.",
-        "dN/dS values are pairwise human-vs-X, not branch-specific.",
+        "Ensembl pairwise dN/dS may be unavailable because recent Compara responses often omit dn/ds; describe this as a data-source limitation, not as evidence against the hypothesis.",
+        "dN/dS values, when present, are pairwise human-vs-X, not branch-specific. Branch-specific dN/dS via PAML is planned for v7.5.",
         "Regulatory overlap is Jaccard-style and not statistically normalized.",
         "The tool is observational, not a phylogenetic comparative method.",
         "Omit reproducibility_check (or return []) when no reproducibility section is present in the input.",
+        "Every outlier_genes item must include non-empty gene, why_notable, and implication strings; omit the item if you cannot explain it.",
     ),
     output_contract=OutputContract(
         summary="Calibrated genomic interpretation.",
         fields=(
             OutputField("patterns_observed", "Observed patterns with support polarity and evidence."),
-            OutputField("outlier_genes", "Genes that stand out and why."),
+            OutputField("outlier_genes", "Genes that stand out; each item requires gene, why_notable, and implication."),
             OutputField("regulatory_overlap", "Shared TF motifs, Jaccard index, and interpretation."),
             OutputField("reproducibility_check", "Cross-reference of reported findings against Ensembl values.", required=False),
             OutputField("limitations", "Explicit limitations of the analysis."),
@@ -139,7 +141,7 @@ def _build_user_prompt(
         tree = d.get("gene_tree") or {}
         reg = d.get("regulatory_features") or []
         dnds_vals = [o["dnds"] for o in orthologs if o.get("dnds") is not None and o["dnds"] < 10]
-        dnds_mean = f"{mean(dnds_vals):.3f}" if dnds_vals else "n/a"
+        dnds_mean = f"{mean(dnds_vals):.3f}" if dnds_vals else "n/a (Ensembl Compara dn/ds not populated for returned orthologs)"
         per_gene_lines.append(
             f"  {g}: orthologs={len(orthologs)}, paralogs={len(paralogs)}, "
             f"duplications={tree.get('duplication_count', 0)}, "

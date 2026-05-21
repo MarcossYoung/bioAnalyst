@@ -135,6 +135,16 @@ export interface AnalystSetStats {
   dnds_mean: number | null
   dnds_stdev: number | null
   dnds_max: number | null
+  dnds_diagnostics?: {
+    genes_with_orthologs: number
+    genes_with_dnds: number
+    orthologs_total: number
+    orthologs_with_dnds: number
+    orthologs_missing_dn: number
+    orthologs_missing_ds: number
+    orthologs_invalid_ds: number
+    orthologs_filtered_high: number
+  }
 }
 
 export interface AnalystCrossSet {
@@ -250,6 +260,10 @@ export interface ComputeTest {
   ci_upper?: number | null
   n?: number | null
   error?: string | null
+  skipped?: boolean
+  skip_reason?: string
+  details?: Record<string, unknown>
+  closest_alternative?: string
   // v7: paml_branch_model fields
   available?: boolean
   per_gene?: Record<string, PamlGeneResult>
@@ -259,7 +273,7 @@ export interface ComputeTest {
 
 export interface ComputeResult {
   tests: ComputeTest[]
-  corrections_applied: string[]
+  corrections_applied: Array<string | Record<string, unknown>>
 }
 
 // ── v6: robustness ───────────────────────────────────────────────────────────
@@ -270,6 +284,7 @@ export interface RobustnessResult {
   most_influential_genes: string[]
   applicable?: boolean
   reason?: string
+  status?: 'ran' | 'skipped' | 'not_applicable' | string
 }
 
 // ── Confirmation gate (section-based) ───────────────────────────────────────

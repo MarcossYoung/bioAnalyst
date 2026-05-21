@@ -277,10 +277,41 @@ def _set_statistics(genes: list[str], gene_data: dict) -> dict:
     duplication_counts = [(gene_data[g]["gene_tree"] or {}).get("duplication_count", 0) for g in valid]
 
     dnds_values = []
+    dnds_diag = {
+        "genes_with_orthologs": 0,
+        "genes_with_dnds": 0,
+        "orthologs_total": 0,
+        "orthologs_with_dnds": 0,
+        "orthologs_missing_dn": 0,
+        "orthologs_missing_ds": 0,
+        "orthologs_invalid_ds": 0,
+        "orthologs_filtered_high": 0,
+    }
     for g in valid:
+        gene_has_dnds = False
+        orthologs = gene_data[g]["orthologs"]
+        if orthologs:
+            dnds_diag["genes_with_orthologs"] += 1
+        dnds_diag["orthologs_total"] += len(orthologs)
         for o in gene_data[g]["orthologs"]:
-            if o.get("dnds") is not None and o["dnds"] < 10:
-                dnds_values.append(o["dnds"])
+            ds = o.get("ds")
+            if o.get("dn") is None:
+                dnds_diag["orthologs_missing_dn"] += 1
+            if ds is None:
+                dnds_diag["orthologs_missing_ds"] += 1
+            elif ds <= 0:
+                dnds_diag["orthologs_invalid_ds"] += 1
+            dnds = o.get("dnds")
+            if dnds is None:
+                continue
+            if dnds >= 10:
+                dnds_diag["orthologs_filtered_high"] += 1
+                continue
+            dnds_values.append(dnds)
+            dnds_diag["orthologs_with_dnds"] += 1
+            gene_has_dnds = True
+        if gene_has_dnds:
+            dnds_diag["genes_with_dnds"] += 1
 
     return {
         "valid_gene_count": len(valid),
@@ -292,6 +323,7 @@ def _set_statistics(genes: list[str], gene_data: dict) -> dict:
         "dnds_mean": mean(dnds_values) if dnds_values else None,
         "dnds_stdev": stdev(dnds_values) if len(dnds_values) > 1 else None,
         "dnds_max": max(dnds_values) if dnds_values else None,
+        "dnds_diagnostics": dnds_diag,
     }
 
 

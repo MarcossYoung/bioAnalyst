@@ -180,6 +180,14 @@ def render_report(formalized: dict, evidence: dict, verdict: dict, analyst_resul
             shared = cross_set.get("shared_tfs", [])
             if shared:
                 stats_lines.append(f"Shared TF motifs: {', '.join(shared[:5])}")
+        if (
+            (set_a_stats.get("dnds_n") == 0 and set_a_stats.get("dnds_diagnostics", {}).get("orthologs_total", 0) > 0)
+            or (set_b_stats.get("dnds_n") == 0 and set_b_stats.get("dnds_diagnostics", {}).get("orthologs_total", 0) > 0)
+        ):
+            stats_lines.append(
+                "[dim]dN/dS note: Ensembl pairwise dN/dS is not populated in recent Compara responses; "
+                "branch-specific dN/dS via PAML is planned for v7.5.[/dim]"
+            )
 
         assessment = interp.get("overall_genomic_assessment", "inconclusive")
         assessment_color = {

@@ -376,10 +376,10 @@ def get_motif_features(chromosome: str, start: int, end: int,
 
 def fetch_orthologs_by_id(ensg_id: str, target_taxon: int = 40674,
                            use_cache: bool = True) -> list[dict]:
-    """GET /homology/id/{ensg_id} — ENSG-based ortholog lookup.
+    """GET /homology/id/human/{ensg_id} — ENSG-based ortholog lookup.
     Same return shape as get_orthologs; used as fallback when symbol lookup fails."""
     data = _request(
-        f"/homology/id/{ensg_id}",
+        f"/homology/id/human/{ensg_id}",
         {"type": "orthologues", "target_taxon": target_taxon, "format": "full"},
         use_cache,
     )
@@ -452,11 +452,11 @@ def fetch_gene_tree_aligned(ensembl_id: str, use_cache: bool = True) -> dict | N
 
 
 def fetch_compara_metadata(ensg_id: str, use_cache: bool = True) -> dict:
-    """GET /homology/id/{ensg_id}?format=condensed — Compara membership metadata.
+    """GET /homology/id/human/{ensg_id}?format=condensed — Compara membership metadata.
     Returns {in_compara, species_count, method_link_types}.
     Used for failure diagnosis when ortholog fetch returns empty."""
     data = _request(
-        f"/homology/id/{ensg_id}",
+        f"/homology/id/human/{ensg_id}",
         {"type": "orthologues", "format": "condensed"},
         use_cache,
     )

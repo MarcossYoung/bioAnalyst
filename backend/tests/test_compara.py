@@ -115,8 +115,8 @@ def test_fetch_orthologs_by_id_uses_fallback_base_url(tmp_path, monkeypatch):
 
     assert len(result) == 1
     assert mock_get.call_count == 2
-    assert mock_get.call_args_list[0].args[0] == "https://rest.ensembl.org/homology/id/ENSG00000000002"
-    assert mock_get.call_args_list[1].args[0] == "https://grch37.rest.ensembl.org/homology/id/ENSG00000000002"
+    assert mock_get.call_args_list[0].args[0] == "https://rest.ensembl.org/homology/id/human/ENSG00000000002"
+    assert mock_get.call_args_list[1].args[0] == "https://grch37.rest.ensembl.org/homology/id/human/ENSG00000000002"
 
 
 def test_fetch_orthologs_by_id_empty_data(tmp_path, monkeypatch):

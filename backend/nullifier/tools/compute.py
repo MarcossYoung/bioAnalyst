@@ -103,6 +103,54 @@ def _ci_bounds(ci) -> tuple:
     return None, None
 
 
+def _ci_unavailable(reason: str) -> dict:
+    return {"value": None, "reason": reason}
+
+
+def _bootstrap_two_sample_ci(a, b, fn: Callable, n_iter: int = 1000,
+                             conf: float = 0.95, seed: int = 0):
+    a, b = _clean(a), _clean(b)
+    if len(a) < 2 or len(b) < 2:
+        return _ci_unavailable("need >=2 values per group for bootstrap CI")
+    rng = np.random.default_rng(seed)
+    vals = []
+    for _ in range(int(n_iter)):
+        aa = rng.choice(a, size=len(a), replace=True)
+        bb = rng.choice(b, size=len(b), replace=True)
+        vals.append(fn(aa, bb))
+    lo, hi = np.percentile(vals, [(1 - conf) / 2 * 100, (1 + conf) / 2 * 100])
+    return [_round(lo), _round(hi)]
+
+
+def _bootstrap_one_sample_ci(values, fn: Callable, n_iter: int = 1000,
+                             conf: float = 0.95, seed: int = 0):
+    a = _clean(values)
+    if len(a) < 2:
+        return _ci_unavailable("need >=2 values for bootstrap CI")
+    rng = np.random.default_rng(seed)
+    vals = [fn(rng.choice(a, size=len(a), replace=True)) for _ in range(int(n_iter))]
+    lo, hi = np.percentile(vals, [(1 - conf) / 2 * 100, (1 + conf) / 2 * 100])
+    return [_round(lo), _round(hi)]
+
+
+def _cohens_d_value(a, b) -> float:
+    a, b = _clean(a), _clean(b)
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return 0.0
+    sp = math.sqrt(((na - 1) * a.var(ddof=1) + (nb - 1) * b.var(ddof=1)) / (na + nb - 2))
+    return float((a.mean() - b.mean()) / sp) if sp > 0 else 0.0
+
+
+def _cliffs_delta_value(a, b) -> float:
+    a, b = _clean(a), _clean(b)
+    if len(a) == 0 or len(b) == 0:
+        return 0.0
+    gt = sum(1 for x in a for y in b if x > y)
+    lt = sum(1 for x in a for y in b if x < y)
+    return float((gt - lt) / (len(a) * len(b)))
+
+
 def _test_result(
     test: str,
     *,
@@ -183,9 +231,10 @@ def cohens_d(a, b) -> dict:
     na, nb = len(a), len(b)
     sp = math.sqrt(((na - 1) * a.var(ddof=1) + (nb - 1) * b.var(ddof=1)) / (na + nb - 2))
     d = (a.mean() - b.mean()) / sp if sp > 0 else 0.0
+    ci = _bootstrap_two_sample_ci(a, b, _cohens_d_value)
     return _test_result("cohens_d", n=[int(na), int(nb)], effect_size=d,
                         effect_size_name="cohens_d", statistic=d, p_value=None,
-                        ci=None, significant=None, method="Cohen's d (pooled SD)")
+                        ci=ci, significant=None, method="Cohen's d (pooled SD)")
 
 
 def cliffs_delta(a, b) -> dict:
@@ -198,10 +247,11 @@ def cliffs_delta(a, b) -> dict:
     mag = abs(delta)
     label = ("negligible" if mag < 0.147 else "small" if mag < 0.33
              else "medium" if mag < 0.474 else "large")
+    ci = _bootstrap_two_sample_ci(a, b, _cliffs_delta_value)
     return _test_result("cliffs_delta", n=[int(len(a)), int(len(b))],
                         effect_size=delta, effect_size_name="cliffs_delta",
                         effect_size_label=label, statistic=delta, magnitude=label,
-                        p_value=None, ci=None, significant=None, method="Cliff's delta")
+                        p_value=None, ci=ci, significant=None, method="Cliff's delta")
 
 
 # ── group-difference tests ──────────────────────────────────────────────────
@@ -227,12 +277,12 @@ def kruskal_wallis(groups: dict) -> dict:
         significant=bool(p < ALPHA),
         effect_size=eps2,
         effect_size_name="epsilon_squared",
-        ci=None,
+        ci=_ci_unavailable("epsilon-squared CI is not computed by this backend"),
         method=f"Kruskal-Wallis H-test across {k} groups (scipy.stats.kruskal)",
     )
 
 
-def mann_whitney_posthoc(groups: dict) -> dict:
+def mann_whitney_posthoc(groups: dict, correction: str = "fdr_bh") -> dict:
     labels = [k for k in groups if len(_clean(groups[k])) > 0]
     pairs = []
     for i in range(len(labels)):
@@ -251,14 +301,26 @@ def mann_whitney_posthoc(groups: dict) -> dict:
                 "statistic": _round(U), "p_value": _round(p, 8),
                 "median_diff": _round(float(np.median(a) - np.median(b))),
                 "effect_size": cd.get("effect_size"), "effect_size_name": "cliffs_delta",
+                "ci": cd.get("ci"), "ci_lower": cd.get("ci_lower"), "ci_upper": cd.get("ci_upper"),
                 "significant": bool(p < ALPHA),
             })
+    p_pairs = [(idx, pair["p_value"]) for idx, pair in enumerate(pairs)
+               if isinstance(pair.get("p_value"), (int, float))]
+    corr_key = _CORRECTION_ALIASES.get(correction, correction)
+    correction_summary = None
+    if corr_key and p_pairs:
+        corr = _correction([p for _, p in p_pairs], corr_key)
+        for (idx, _), p_adj, reject in zip(p_pairs, corr["pvals_adjusted"], corr["reject"]):
+            pairs[idx]["p_value_adjusted"] = p_adj
+            pairs[idx]["significant_adjusted"] = bool(reject)
+        correction_summary = {"method": corr_key, "n_tests": len(p_pairs), "alpha": ALPHA}
     return _test_result(
         "mann_whitney_posthoc",
         n=sum(sum(pair.get("n", [])) for pair in pairs if isinstance(pair.get("n"), list)) or None,
         effect_size_name="cliffs_delta",
-        method="Pairwise Mann-Whitney U with Cliff's delta (uncorrected p; apply a correction)",
-        details={"pairs": pairs},
+        ci=_ci_unavailable("pairwise CIs are reported in details.pairs"),
+        method="Pairwise Mann-Whitney U with Cliff's delta",
+        details={"pairs": pairs, "correction": correction_summary},
         warnings=["Pairwise p-values and effect sizes are reported in details.pairs."],
         pairs=pairs,
     )
@@ -280,11 +342,45 @@ def _paired(x, y) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(xs), np.asarray(ys)
 
 
+def _paired_with_diagnostics(x, y) -> tuple[np.ndarray, np.ndarray, dict]:
+    x_raw = list(x if x is not None else [])
+    y_raw = list(y if y is not None else [])
+    xs, ys = _paired(x_raw, y_raw)
+    return xs, ys, {
+        "x_length": len(x_raw),
+        "y_length": len(y_raw),
+        "paired_n": int(len(xs)),
+        "dropped_n": max(len(x_raw), len(y_raw)) - int(len(xs)),
+    }
+
+
 def spearman(x, y) -> dict:
-    x, y = _paired(x, y)
+    x, y, diag = _paired_with_diagnostics(x, y)
+    if diag["x_length"] != diag["y_length"]:
+        return _test_result(
+            "spearman", available=False, skipped=True,
+            skip_reason="x and y have different lengths",
+            n=int(len(x)), details=diag, ci=_ci_unavailable("test skipped"),
+        )
     if len(x) < 3:
-        return _test_result("spearman", error="need >=3 paired observations", n=int(len(x)))
+        return _test_result(
+            "spearman", available=False, skipped=True,
+            skip_reason="need >=3 paired observations",
+            n=int(len(x)), details=diag, ci=_ci_unavailable("test skipped"),
+        )
+    if len(set(x.tolist())) < 2 or len(set(y.tolist())) < 2:
+        return _test_result(
+            "spearman", available=False, skipped=True,
+            skip_reason="correlation undefined for constant input",
+            n=int(len(x)), details=diag, ci=_ci_unavailable("test skipped"),
+        )
     rho, p = sps.spearmanr(x, y)
+    if math.isnan(float(rho)) or math.isnan(float(p)):
+        return _test_result(
+            "spearman", available=False, skipped=True,
+            skip_reason="correlation undefined for constant input",
+            n=int(len(x)), details=diag, ci=_ci_unavailable("test skipped"),
+        )
     return _test_result("spearman", n=int(len(x)), statistic=rho,
                         effect_size=rho, effect_size_name="rho", p_value=p,
                         ci=_fisher_ci(rho, len(x)), significant=bool(p < ALPHA),
@@ -292,9 +388,19 @@ def spearman(x, y) -> dict:
 
 
 def pearson(x, y) -> dict:
-    x, y = _paired(x, y)
+    x, y, diag = _paired_with_diagnostics(x, y)
+    if diag["x_length"] != diag["y_length"]:
+        return _test_result(
+            "pearson", available=False, skipped=True,
+            skip_reason="x and y have different lengths",
+            n=int(len(x)), details=diag, ci=_ci_unavailable("test skipped"),
+        )
     if len(x) < 3:
-        return _test_result("pearson", error="need >=3 paired observations", n=int(len(x)))
+        return _test_result(
+            "pearson", available=False, skipped=True,
+            skip_reason="need >=3 paired observations",
+            n=int(len(x)), details=diag, ci=_ci_unavailable("test skipped"),
+        )
     r, p = sps.pearsonr(x, y)
     return _test_result("pearson", n=int(len(x)), statistic=r,
                         effect_size=r, effect_size_name="r", p_value=p,
@@ -328,7 +434,8 @@ def fisher_exact(table) -> dict:
     odds, p = sps.fisher_exact(arr, alternative="two-sided")
     return _test_result("fisher_exact", n=int(arr.sum()), inputs={"table": arr.tolist()},
                         table=arr.tolist(), statistic=odds, effect_size=odds,
-                        effect_size_name="odds_ratio", p_value=p, ci=None,
+                        effect_size_name="odds_ratio", p_value=p,
+                        ci=_ci_unavailable("Fisher exact CI is not computed by this backend"),
                         significant=bool(p < ALPHA), method="Fisher's exact test (2x2)")
 
 
@@ -344,7 +451,9 @@ def chi_square(table) -> dict:
     low_expected = bool((np.asarray(expected) < 5).any())
     return _test_result("chi_square", n=int(n), inputs={"table": arr.tolist()}, table=arr.tolist(),
                         statistic=chi2, df=int(dof), p_value=p, effect_size=cramers_v,
-                        effect_size_name="cramers_v", ci=None, significant=bool(p < ALPHA),
+                        effect_size_name="cramers_v",
+                        ci=_ci_unavailable("Cramer's V CI is not computed by this backend"),
+                        significant=bool(p < ALPHA),
                         low_expected_counts=low_expected,
                         method="Pearson chi-square test of independence (scipy.stats.chi2_contingency)")
 
@@ -391,7 +500,8 @@ def permutation_test(a, b, statistic: str = "mean_diff", n_iter: int = 10000, se
     p = (count + 1) / (int(n_iter) + 1)
     return _test_result("permutation_test", n=[int(len(a)), int(len(b))], statistic_name=statistic,
                         statistic=float(obs), p_value=p, n_iter=int(n_iter),
-                        effect_size=float(obs), effect_size_name=statistic, ci=None,
+                        effect_size=float(obs), effect_size_name=statistic,
+                        ci=_bootstrap_two_sample_ci(a, b, stat_fn),
                         significant=bool(p < ALPHA),
                         method=f"Two-sided permutation test on the {statistic} ({int(n_iter)} permutations)")
 
@@ -452,26 +562,40 @@ def _paml_branch_model(inputs: dict, data: dict) -> dict:
     computed = [v for v in paml.values()
                 if isinstance(v, dict) and v.get("status") == "computed"]
     if not computed:
-        return {"available": False, "requested": "paml_branch_model",
-                "closest_alternative": "Compara pairwise dN/dS (already computed)"}
+        status_counts: dict[str, int] = {}
+        for result in paml.values():
+            if isinstance(result, dict):
+                status = result.get("status") or "unknown"
+                status_counts[status] = status_counts.get(status, 0) + 1
+        return _test_result(
+            "paml_branch_model",
+            available=False,
+            error="no computed PAML results",
+            details={"paml_status_counts": status_counts},
+            closest_alternative="Compara pairwise dN/dS (already computed)",
+            method="PAML codeml branch model 2 LRT",
+        )
     best = min(computed, key=lambda x: x.get("lrt_pvalue", 1.0))
     from scipy.stats import chi2 as _chi2
     return {
-        "test": "paml_branch_model", "available": True,
-        "n": len(computed),
-        "statistic": best["lrt_chi2"],
-        "p_value": best["lrt_pvalue"],
-        "significant": best["lrt_pvalue"] < 0.05,
-        "effect_size": best.get("omega_foreground"),
-        "effect_size_name": "omega_foreground",
-        "effect_size_label": (
+        **_test_result(
+            "paml_branch_model",
+            available=True,
+            n=len(computed),
+            statistic=best["lrt_chi2"],
+            p_value=best["lrt_pvalue"],
+            significant=best["lrt_pvalue"] < 0.05,
+            effect_size=best.get("omega_foreground"),
+            effect_size_name="omega_foreground",
+            effect_size_label=(
             "positive selection"
             if (best.get("omega_foreground") or 0) > 1 else "purifying/neutral"
+            ),
+            ci=_ci_unavailable("PAML branch model CI is not computed"),
+            method="PAML codeml branch model 2 LRT",
         ),
-        "ci_lower": None, "ci_upper": None,
         "per_gene": paml,
         "foreground_group": inputs.get("foreground", "primates"),
-        "method": "PAML codeml branch model 2 LRT",
     }
 
 
@@ -560,6 +684,9 @@ def _run_one(name: str, inputs: dict, data: dict) -> dict:
     inputs = inputs or {}
     try:
         if kind == "groups":
+            if name == "mann_whitney_posthoc":
+                correction = inputs.get("correction") or inputs.get("correction_method") or "fdr_bh"
+                return fn(_resolve_groups(inputs, data), correction=correction)
             return fn(_resolve_groups(inputs, data))
         if kind == "xy":
             return fn(_lookup(inputs.get("x"), data), _lookup(inputs.get("y"), data))
@@ -641,7 +768,8 @@ def run_analysis_plan(plan: dict, data: dict) -> dict:
             ))
             continue
         res = _run_one(name, (entry or {}).get("inputs", {}), data)
-        res["available"] = True
+        if "available" not in res:
+            res["available"] = True
         if rationale:
             res["rationale"] = rationale
         results.append(validate_test_result(res))
@@ -773,8 +901,16 @@ def leave_one_out(starter_genes: list[str], primary_tests: list[dict],
     if not primary_tests or not starter_genes:
         return {"applicable": bool(primary_tests),
                 "reason": "no primary tests" if not primary_tests else "no starter genes",
+                "status": "not_applicable" if not primary_tests else "skipped",
                 "full_result": full, "perturbations": [], "agreement_fraction": 1.0,
                 "stability": "stable", "most_influential_genes": []}
+
+    if not any(sig is not None or sign != 0 for sig, sign in full_story):
+        return {"applicable": False,
+                "reason": "primary tests had insufficient results to perturb",
+                "status": "skipped",
+                "full_result": full, "perturbations": [], "agreement_fraction": 1.0,
+                "stability": "unknown", "most_influential_genes": []}
 
     perturbations = []
     full_agree_count = 0
@@ -806,6 +942,7 @@ def leave_one_out(starter_genes: list[str], primary_tests: list[dict],
                               key=lambda g: -influence[g])
     return {
         "applicable": True,
+        "status": "ran",
         "n_perturbations": len(starter_genes),
         "full_result": full,
         "perturbations": perturbations,

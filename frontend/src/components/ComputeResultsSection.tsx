@@ -34,18 +34,37 @@ function SigBadge({ sig }: { sig: boolean | null | undefined }) {
   )
 }
 
+function formatCorrection(c: unknown): string {
+  if (typeof c === 'string') return c
+  if (c && typeof c === 'object') {
+    const obj = c as Record<string, unknown>
+    const method = obj.adjust_method ?? obj.method ?? 'correction'
+    const n = obj.n_tests !== undefined ? `, n=${obj.n_tests}` : ''
+    const alpha = obj.alpha !== undefined ? `, alpha=${obj.alpha}` : ''
+    return `${method}${n}${alpha}`
+  }
+  return String(c)
+}
+
 function TestRow({ t }: { t: ComputeTest }) {
   const sig = t.significant_adjusted ?? t.significant
+  const unavailable = t.available === false
+  const statusCounts = t.details?.paml_status_counts as Record<string, number> | undefined
+  const statusText = statusCounts
+    ? Object.entries(statusCounts).map(([status, count]) => `${status}: ${count}`).join(', ')
+    : null
   return (
     <tr style={{ borderBottom: '1px solid var(--border-light)', verticalAlign: 'middle' }}>
       <td style={{ padding: '6px 8px 6px 0', fontSize: '12px', fontFamily: 'ui-monospace, Consolas, monospace', color: 'var(--text-body)' }}>
         {t.test}
       </td>
       <td style={{ padding: '6px 8px', fontSize: '12px', fontFamily: 'ui-monospace, Consolas, monospace', textAlign: 'right' }}>
-        {t.error ? <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>error</span> : pFmt(t.p_value)}
+        {unavailable
+          ? <span title={statusText ?? t.closest_alternative} style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>unavailable</span>
+          : t.error ? <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>error</span> : pFmt(t.p_value)}
       </td>
       <td style={{ padding: '6px 8px', textAlign: 'center' }}>
-        {!t.error && <SigBadge sig={sig} />}
+        {!t.error && !unavailable && <SigBadge sig={sig} />}
       </td>
       <td style={{ padding: '6px 8px', fontSize: '12px', fontFamily: 'ui-monospace, Consolas, monospace', textAlign: 'right', color: 'var(--text-muted)' }}>
         {t.effect_size !== null && t.effect_size !== undefined
@@ -68,14 +87,15 @@ function TestRow({ t }: { t: ComputeTest }) {
 interface ComputeResultsSectionProps {
   result: ComputeResult | null
   progressiveTests?: ComputeTest[]
-  correctionsApplied?: string[]
+  correctionsApplied?: Array<string | Record<string, unknown>>
 }
 
 export function ComputeResultsSection({ result, progressiveTests = [], correctionsApplied = [] }: ComputeResultsSectionProps) {
   const [hideNonSig, setHideNonSig] = useState(false)
 
   const tests: ComputeTest[] = result?.tests ?? progressiveTests
-  const corrections: string[] = result?.corrections_applied ?? correctionsApplied
+  const corrections = result?.corrections_applied ?? correctionsApplied
+  const correctionLabels = corrections.map(formatCorrection)
 
   const visible = hideNonSig
     ? tests.filter((t) => (t.significant_adjusted ?? t.significant) === true)
@@ -99,12 +119,12 @@ export function ComputeResultsSection({ result, progressiveTests = [], correctio
         }}>
           computed
         </span>
-        {corrections.length > 0 && (
+        {correctionLabels.length > 0 && (
           <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-            correction: {corrections.join(', ')}
+            correction: {correctionLabels.join(', ')}
           </span>
         )}
-        <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: corrections.length > 0 ? '0' : 'auto' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: correctionLabels.length > 0 ? '0' : 'auto' }}>
           <input
             type="checkbox"
             checked={hideNonSig}

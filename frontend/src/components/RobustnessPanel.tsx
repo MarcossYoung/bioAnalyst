@@ -30,11 +30,13 @@ interface RobustnessPanelProps {
 
 export function RobustnessPanel({ robustness }: RobustnessPanelProps) {
   if (robustness.applicable === false) {
+    const skipped = robustness.status === 'skipped'
+    const label = skipped ? 'Skipped' : 'Not applicable'
     return (
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '6px', padding: '14px 20px' }}>
         <div style={SECTION_LABEL}>Verdict robustness</div>
         <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-muted)' }}>
-          Not applicable{robustness.reason ? ` — ${robustness.reason}` : ''}.
+          {label}{robustness.reason ? ` - ${robustness.reason}` : ''}.
         </p>
       </div>
     )

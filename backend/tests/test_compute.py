@@ -32,8 +32,33 @@ def test_kruskal_handles_empty():
 
 def test_spearman_perfect_rank():
     r = c.spearman([1, 2, 3, 4, 5], [10, 20, 30, 40, 50])
+    assert_full_test_result(r)
     assert r["statistic"] == pytest.approx(1.0)
     assert r["significant"] is True
+
+
+def test_spearman_skips_mismatched_lengths():
+    r = c.spearman([1, 2, 3], [1, 2, 3, 4])
+    assert_full_test_result(r)
+    assert r["available"] is False
+    assert r["skipped"] is True
+    assert r["skip_reason"] == "x and y have different lengths"
+
+
+def test_spearman_drops_nulls_but_requires_minimum_n():
+    r = c.spearman([1, None, 3, 4], [1, 2, None, 4])
+    assert_full_test_result(r)
+    assert r["available"] is False
+    assert r["skipped"] is True
+    assert r["skip_reason"] == "need >=3 paired observations"
+
+
+def test_spearman_skips_constant_input():
+    r = c.spearman([1, 1, 1, 1], [1, 2, 3, 4])
+    assert_full_test_result(r)
+    assert r["available"] is False
+    assert r["skipped"] is True
+    assert r["skip_reason"] == "correlation undefined for constant input"
 
 
 def test_pearson_ci_present():
@@ -147,6 +172,68 @@ def test_run_analysis_plan_never_produces_sparse_test_results():
     for result in out["tests"]:
         assert_full_test_result(result)
     assert out["tests"][-1]["available"] is False
+
+
+def test_mann_whitney_posthoc_populates_and_corrects_pairs():
+    r = c.mann_whitney_posthoc({
+        "a": [0.10, 0.11, 0.12, 0.13],
+        "b": [0.30, 0.31, 0.32, 0.33],
+        "c": [0.50, 0.51, 0.52, 0.53],
+    })
+    assert_full_test_result(r)
+    pairs = r["details"]["pairs"]
+    assert len(pairs) == 3
+    assert all(pair.get("p_value") is not None for pair in pairs)
+    assert all(pair.get("p_value_adjusted") is not None for pair in pairs)
+    assert r["details"]["correction"]["method"] == "fdr_bh"
+
+
+def test_all_results_explain_ci_when_bounds_absent():
+    results = [
+        c.kruskal_wallis({"a": [1, 2, 3], "b": [4, 5, 6]}),
+        c.fisher_exact([[8, 2], [1, 9]]),
+        c.chi_square([[10, 20], [5, 25]]),
+        c.mann_whitney_posthoc({"a": [1, 2, 3], "b": [4, 5, 6]}),
+    ]
+    for result in results:
+        assert_full_test_result(result)
+        if result["ci_lower"] is None and result["ci_upper"] is None:
+            assert isinstance(result["ci"], dict)
+            assert result["ci"]["reason"]
+
+
+def test_run_analysis_plan_preserves_unavailable_paml_result():
+    plan = {"tests_requested": [
+        {"test": "paml_branch_model", "inputs": {"foreground": "primates"}},
+    ]}
+    data = {"paml": {
+        "GENE1": {"status": "codeml_unavailable", "gene": "GENE1"},
+        "GENE2": {"status": "no_alignment", "gene": "GENE2"},
+    }}
+
+    out = c.run_analysis_plan(plan, data)
+    result = out["tests"][0]
+
+    assert_full_test_result(result)
+    assert result["available"] is False
+    assert result["details"]["paml_status_counts"] == {
+        "codeml_unavailable": 1,
+        "no_alignment": 1,
+    }
+
+
+def test_leave_one_out_skips_when_primary_tests_have_no_result():
+    def rebuild(_excluded: set) -> dict:
+        return {"groups": {}, "variables": {"x": [1, 2], "y": [2, 3]}, "gene_index": [], "tables": {}}
+
+    res = c.leave_one_out(
+        ["G1", "G2"],
+        [{"test": "spearman", "inputs": {"x": "x", "y": "y"}}],
+        rebuild,
+    )
+    assert res["applicable"] is False
+    assert res["status"] == "skipped"
+    assert res["reason"] == "primary tests had insufficient results to perturb"
 
 
 def test_leave_one_out_stable_when_signal_robust():

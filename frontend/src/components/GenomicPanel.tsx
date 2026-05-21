@@ -48,6 +48,12 @@ const Chip = ({ children, scheme = 'blue' }: { children: React.ReactNode; scheme
 }
 
 function SetStats({ stats }: { stats: AnalystSetStats }) {
+  const diag = stats.dnds_diagnostics
+  const dndsMissingNote = diag && stats.dnds_n === 0
+    ? diag.orthologs_total === 0
+      ? 'no orthologs returned'
+      : `0/${diag.orthologs_total} orthologs had usable dn/ds`
+    : null
   const num = (n: number | null | undefined, d = 1) => (typeof n === 'number' ? n.toFixed(d) : '—')
   return (
     <div style={{
@@ -58,6 +64,12 @@ function SetStats({ stats }: { stats: AnalystSetStats }) {
       <span>{stats.valid_gene_count} gene(s) · {num(stats.mean_ortholog_count)} orthologs avg</span>
       <span>{num(stats.mean_paralog_count)} paralogs · {num(stats.mean_duplication_count)} dups avg</span>
       <span>dN/dS: {stats.dnds_n > 0 && typeof stats.dnds_mean === 'number' ? stats.dnds_mean.toFixed(3) : 'n/a'}</span>
+      {diag && (
+        <span title={`missing dn: ${diag.orthologs_missing_dn}; missing ds: ${diag.orthologs_missing_ds}; invalid ds: ${diag.orthologs_invalid_ds}; filtered high: ${diag.orthologs_filtered_high}`}>
+          dN/dS coverage: {diag.genes_with_dnds}/{stats.valid_gene_count} genes, {diag.orthologs_with_dnds}/{diag.orthologs_total} orthologs
+        </span>
+      )}
+      {dndsMissingNote && <span>{dndsMissingNote}; Ensembl pairwise dN/dS is not populated in recent Compara responses. Branch-specific dN/dS via PAML is planned for v7.5.</span>}
     </div>
   )
 }
@@ -170,7 +182,9 @@ export function GenomicPanel({ analyst }: GenomicPanelProps) {
             {interp.outlier_genes.map((o) => (
               <li key={o.gene} style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                 <span style={{ fontFamily: 'ui-monospace, Consolas, monospace', color: 'var(--text-heading)', fontWeight: 600 }}>{o.gene}</span>
-                {' '}— {o.why_notable}. <em>{o.implication}</em>
+                {o.why_notable || o.implication
+                  ? <> {' '}— {[o.why_notable, o.implication].filter(Boolean).join(' ')}</>
+                  : <> {' '}— explanation unavailable</>}
               </li>
             ))}
           </ul>

@@ -62,6 +62,12 @@ Scores are from 1 (falsified) to 10 (strongly supported):
 Use NOVEL-UNTESTED when novelty_flag is unstudied across claims.
 Propose the single most decisive experiment or analysis."""
 
+SKEPTIC_DNDS_LIMITATION = (
+    "Known data limitation: recent Ensembl Compara homology responses often omit dn/ds, "
+    "so missing pairwise dN/dS should not lower the methodological score by itself. "
+    "Branch-specific dN/dS via PAML is planned for v7.5."
+)
+
 
 SKEPTIC_CRITIQUE_BLOCK = """
 
@@ -121,7 +127,9 @@ def stress_test(formalized: dict, evidence: dict, analyst_result: dict | None = 
     critique_active = bool(completed_analysis)
     critique_section = _format_completed_analysis(methods_used, completed_analysis, analyst_result) if critique_active else ""
 
-    system = SKEPTIC_SYSTEM_BASE + (SKEPTIC_CRITIQUE_BLOCK if critique_active else "")
+    system = SKEPTIC_SYSTEM_BASE + "\n\n" + SKEPTIC_DNDS_LIMITATION + (
+        SKEPTIC_CRITIQUE_BLOCK if critique_active else ""
+    )
 
     task = TaskObject(
         title="Final skeptical review",
@@ -196,6 +204,7 @@ def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
     cross_set = analyst_result.get("cross_set") or {}
 
     lines = ["\nGENOMIC EVIDENCE (Analyst):"]
+    lines.append(f"  {SKEPTIC_DNDS_LIMITATION}")
     lines.append(f"  Overall genomic assessment: {interp.get('overall_genomic_assessment', '?')}")
     lines.append(f"  Justification: {interp.get('assessment_justification', '')}")
 
