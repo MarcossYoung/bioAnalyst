@@ -7,6 +7,7 @@ from ..tools.gnomad import fetch_constraint
 from ..tools.phylo import lookup_phylo_age
 from ..tools.genomic_data import build_data, retrievable_summary
 from ..tools.compute import verify_reported_stats, _data_summary
+from ..config.loader import load_config
 from .. import events as ev
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
@@ -54,10 +55,13 @@ def _fetch_paml_data(
     starter_genes: list[str],
     foreground: str = "primates",
     use_cache: bool = True,
+    on_event=None,
 ) -> dict:
     from ..tools import paml
     results = {}
     for sym in starter_genes:
+        if on_event:
+            on_event(ev.paml_gene_started(sym, foreground))
         d = gene_data.get(sym, {})
         if "_error" in d:
             results[sym] = {"status": "error", "note": d["_error"]}
@@ -73,7 +77,41 @@ def _fetch_paml_data(
         results[sym] = paml.run_branch_model(
             ensg, sym, aligned, foreground=foreground, use_cache=use_cache
         )
+        result = results[sym]
+        if on_event and result.get("status") == "timeout":
+            on_event(ev.paml_gene_timeout(sym))
+        elif on_event and result.get("status") == "computed":
+            on_event(ev.paml_gene_complete(
+                sym,
+                result.get("omega_foreground"),
+                result.get("omega_background"),
+                result.get("lrt_pvalue"),
+            ))
     return results
+
+
+def _limit_targets(all_targets: list, expansion: dict) -> list:
+    cfg = load_config().get("ensembl", {})
+    limit = int(cfg.get("max_genes_for_full_analysis", 500))
+    if limit <= 0 or len(all_targets) <= limit:
+        return all_targets
+    starters = list(expansion.get("starter") or [])
+    slots = max(limit - len(starters), 0)
+    pools = []
+    pools.extend((expansion.get("expanded") or {}).values())
+    pools.extend((expansion.get("controls") or {}).values())
+    per_pool = max(1, slots // max(len(pools), 1)) if slots else 0
+    selected = list(starters)
+    for pool in pools:
+        for gene in list(pool)[:per_pool]:
+            if gene not in selected and len(selected) < limit:
+                selected.append(gene)
+    for gene in all_targets:
+        if len(selected) >= limit:
+            break
+        if gene not in selected:
+            selected.append(gene)
+    return selected
 
 
 def run_analyst(
@@ -95,6 +133,7 @@ def run_analyst(
         if on_event:
             on_event(e)
 
+    all_targets = _limit_targets(list(all_targets), expansion)
     _emit(ev.analyst_started(len(all_targets)))
 
     gene_data = _fetch_all_gene_data(
@@ -116,17 +155,17 @@ def run_analyst(
         len(gene_data),
     ))
 
-    paml_data = _fetch_paml_data(gene_data, list(starter_entities), use_cache=use_cache)
+    paml_data = _fetch_paml_data(gene_data, list(starter_entities), use_cache=use_cache, on_event=_emit)
     _emit(ev.analyst_paml_complete(
         sum(1 for v in paml_data.values() if v.get("status") == "computed"),
         len(starter_entities),
     ))
 
-    data = build_data(gene_data, expansion, gnomad_data=gnomad_data, phylo_data=phylo_data)
+    data = build_data(gene_data, expansion, gnomad_data=gnomad_data, phylo_data=phylo_data, paml_data=paml_data)
 
     set_a, set_b = _split_into_sets(formalized, starter_entities)
-    set_a_stats = _set_statistics(set_a, gene_data) if set_a else None
-    set_b_stats = _set_statistics(set_b, gene_data) if set_b else None
+    set_a_stats = _set_statistics(set_a, gene_data, paml_data) if set_a else None
+    set_b_stats = _set_statistics(set_b, gene_data, paml_data) if set_b else None
     cross_set = _cross_set_analysis(set_a, set_b, gene_data) if (set_a and set_b) else None
 
     reproducibility = None
@@ -183,9 +222,24 @@ def _fetch_all_gene_data(
     on_event=None,
 ) -> dict:
     starters = {g.upper() for g in (starter_genes or [])}
+    ensg_inputs = [g for g in genes if isinstance(g, str) and g.upper().startswith("ENSG")]
+    id_lookup = ensembl.lookup_genes_by_id_batch(
+        ensg_inputs,
+        use_cache=use_cache,
+        on_progress=(lambda n, total: on_event(ev.ensembl_batch_progress(n, total)) if on_event else None),
+    ) if ensg_inputs else {}
+    id_orthologs = ensembl.fetch_orthologs_by_id_batch(
+        ensg_inputs,
+        use_cache=use_cache,
+        on_progress=(lambda n, total: on_event(ev.ensembl_batch_progress(n, total)) if on_event else None),
+    ) if ensg_inputs else {}
 
     def _full(g: str) -> tuple[str, dict]:
-        info = ensembl.lookup_gene(g, use_cache)
+        if g in id_lookup:
+            raw = id_lookup[g]
+            info = _record_from_lookup_id(g, raw)
+        else:
+            info = ensembl.lookup_gene(g, use_cache)
         if not info:
             if on_gene:
                 on_gene(g, "error")
@@ -194,7 +248,7 @@ def _fetch_all_gene_data(
         if resolved_from and on_event:
             on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
         canonical = info["symbol"]
-        orthologs = ensembl.get_orthologs(canonical, use_cache=use_cache)
+        orthologs = id_orthologs.get(g) if g in id_orthologs else ensembl.get_orthologs(canonical, use_cache=use_cache)
         _homology_source = "symbol"
         if not orthologs and info.get("ensembl_id"):
             ensg_id = info["ensembl_id"]
@@ -225,7 +279,11 @@ def _fetch_all_gene_data(
         }
 
     def _light(g: str) -> tuple[str, dict]:
-        info = ensembl.lookup_gene(g, use_cache)
+        if g in id_lookup:
+            raw = id_lookup[g]
+            info = _record_from_lookup_id(g, raw)
+        else:
+            info = ensembl.lookup_gene(g, use_cache)
         if not info:
             if on_gene:
                 on_gene(g, "error")
@@ -234,7 +292,7 @@ def _fetch_all_gene_data(
         if resolved_from and on_event:
             on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
         canonical = info["symbol"]
-        orthologs = ensembl.get_orthologs(canonical, use_cache=use_cache)
+        orthologs = id_orthologs.get(g) if g in id_orthologs else ensembl.get_orthologs(canonical, use_cache=use_cache)
         _homology_source = "symbol"
         if not orthologs and info.get("ensembl_id"):
             ensg_id = info["ensembl_id"]
@@ -267,7 +325,20 @@ def _fetch_all_gene_data(
     return out
 
 
-def _set_statistics(genes: list[str], gene_data: dict) -> dict:
+def _record_from_lookup_id(query: str, data: dict) -> dict:
+    return {
+        "symbol": data.get("display_name") or data.get("external_name") or query,
+        "ensembl_id": data.get("id") or query,
+        "biotype": data.get("biotype"),
+        "chromosome": data.get("seq_region_name"),
+        "start": data.get("start"),
+        "end": data.get("end"),
+        "strand": data.get("strand"),
+        "description": data.get("description"),
+    }
+
+
+def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = None) -> dict:
     valid = [g for g in genes if "_error" not in gene_data.get(g, {})]
     if not valid:
         return {"valid_gene_count": 0}
@@ -277,6 +348,8 @@ def _set_statistics(genes: list[str], gene_data: dict) -> dict:
     duplication_counts = [(gene_data[g]["gene_tree"] or {}).get("duplication_count", 0) for g in valid]
 
     dnds_values = []
+    omega_values = []
+    acceleration_ratios = []
     dnds_diag = {
         "genes_with_orthologs": 0,
         "genes_with_dnds": 0,
@@ -312,6 +385,12 @@ def _set_statistics(genes: list[str], gene_data: dict) -> dict:
             gene_has_dnds = True
         if gene_has_dnds:
             dnds_diag["genes_with_dnds"] += 1
+        paml_result = (paml_data or {}).get(g) or {}
+        if paml_result.get("status") == "computed":
+            if paml_result.get("omega_foreground") is not None:
+                omega_values.append(paml_result["omega_foreground"])
+            if paml_result.get("acceleration_ratio") is not None:
+                acceleration_ratios.append(paml_result["acceleration_ratio"])
 
     return {
         "valid_gene_count": len(valid),
@@ -324,6 +403,16 @@ def _set_statistics(genes: list[str], gene_data: dict) -> dict:
         "dnds_stdev": stdev(dnds_values) if len(dnds_values) > 1 else None,
         "dnds_max": max(dnds_values) if dnds_values else None,
         "dnds_diagnostics": dnds_diag,
+        "omega_foreground_n": len(omega_values),
+        "omega_foreground_mean": mean(omega_values) if omega_values else None,
+        "acceleration_ratio_n": len(acceleration_ratios),
+        "acceleration_ratio_mean": mean(acceleration_ratios) if acceleration_ratios else None,
+        "foreground_label": next(
+            (v.get("foreground_label") or v.get("foreground_group")
+             for v in (paml_data or {}).values()
+             if isinstance(v, dict) and v.get("status") == "computed"),
+            None,
+        ),
     }
 
 

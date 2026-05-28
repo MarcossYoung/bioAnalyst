@@ -48,6 +48,41 @@ npm run build   # outputs to backend/nullifier/static/
 cd ..
 ```
 
+### R + PAML for Branch-Model dN/dS
+
+v7.5 can compute lineage-specific branch-model omega via PAML `codeml`.
+
+Install R 4.0+:
+
+```bash
+# macOS
+brew install r
+
+# Ubuntu
+sudo apt install r-base
+```
+
+On Windows, install R from https://www.r-project.org/.
+
+Install required R packages once:
+
+```r
+install.packages(c("ape", "phangorn", "seqinr", "caper"))
+```
+
+Install PAML so `codeml` is on `PATH`:
+
+```bash
+# macOS
+brew install paml
+
+# Ubuntu
+sudo apt install paml
+```
+
+The startup health endpoint reports missing R packages and missing `codeml`.
+Set `[r].r_home` in `~/.nullifier/config.toml` if R is installed in a non-standard location.
+
 ### API Keys
 
 ```bash

@@ -142,6 +142,7 @@ def run_pipeline(
                         analyst_data["gene_data"], expansion, exclude=excl,
                         gnomad_data=analyst_data["gnomad_data"],
                         phylo_data=analyst_data["phylo_data"],
+                        paml_data=analyst_data.get("paml_data"),
                     ),
                     on_event=compute_events.append,
                 )

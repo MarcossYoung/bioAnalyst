@@ -38,6 +38,13 @@ fallback_base_urls = []
 rate_limit_per_second = 14  # Ensembl allows 15; we stay 1 under
 cache_ttl_days = 30
 cache_path = "~/.nullifier/ensembl_cache.db"
+batch_size = 1000
+max_genes_for_full_analysis = 500
+
+[r]
+enabled = true
+r_home = ""  # auto-detect if empty; set manually if R is in a non-standard location
+required_packages = ["ape", "phangorn", "seqinr", "caper"]
 
 [literature]
 max_papers_per_claim = 12

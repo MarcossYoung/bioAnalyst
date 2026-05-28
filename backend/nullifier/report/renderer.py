@@ -186,7 +186,7 @@ def render_report(formalized: dict, evidence: dict, verdict: dict, analyst_resul
         ):
             stats_lines.append(
                 "[dim]dN/dS note: Ensembl pairwise dN/dS is not populated in recent Compara responses; "
-                "branch-specific dN/dS via PAML is planned for v7.5.[/dim]"
+                "branch-model omega is computed via PAML codeml when sufficient alignments are available.[/dim]"
             )
 
         assessment = interp.get("overall_genomic_assessment", "inconclusive")

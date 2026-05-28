@@ -26,6 +26,7 @@ from .pipeline import run_pipeline
 from .store import runs as db
 from .tools.flag_store import add_flag, list_all_flags
 from .tools.llm_client import health_check_local
+from .tools.r_bridge import health_check as health_check_r
 
 
 # ── In-process state ────────────────────────────────────────────────────────
@@ -124,7 +125,7 @@ async def cancel_run(run_id: str):
 @app.get("/api/health")
 async def health():
     ok, msg = health_check_local()
-    return {"local_llm": {"ok": ok, "message": msg}}
+    return {"local_llm": {"ok": ok, "message": msg}, "r": health_check_r()}
 
 
 # ── Flags ────────────────────────────────────────────────────────────────────

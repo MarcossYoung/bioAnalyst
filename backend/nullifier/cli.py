@@ -207,12 +207,19 @@ def _build_confirm_callback(console):
 def cmd_serve(args):
     import uvicorn
     from .tools.llm_client import health_check_local
+    from .tools.r_bridge import initialize_r
 
     ok, msg = health_check_local()
     status = "OK" if ok else "!!"
     print(f"[{status}] LM Studio: {msg}")
     if not ok:
         print("    Local-model tasks will fail until LM Studio is running.")
+
+    r_health = initialize_r()
+    r_status = "OK" if r_health.ok else "!!"
+    print(f"[{r_status}] R/PAML: {r_health.message}")
+    if r_health.enabled and not r_health.ok:
+        raise SystemExit("R/PAML health check failed. Install the missing dependencies or set [r].enabled=false.")
 
     print(f"\nStarting Nullifier server at http://{args.host}:{args.port}")
     uvicorn.run(

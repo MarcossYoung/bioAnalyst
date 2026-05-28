@@ -178,6 +178,39 @@ def _request(path: str, params: dict = None, use_cache: bool = True) -> Any | No
     return None
 
 
+def _post(path: str, payload: dict, params: dict = None, use_cache: bool = True) -> Any | None:
+    cfg = _get_cfg()
+    cache_key = f"POST {path}?{json.dumps(params or {}, sort_keys=True)}:{json.dumps(payload, sort_keys=True)}"
+    cached = _cache_get(cache_key, use_cache)
+    if cached is not None:
+        return cached
+
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    for base_url in _ensembl_base_urls(cfg):
+        _rate_limit()
+        try:
+            url = f"{base_url}{path}"
+            r = requests.post(url, params=params or {}, json=payload, headers=headers, timeout=30)
+            if r.status_code == 429:
+                retry_after = int(r.headers.get("Retry-After", "5"))
+                time.sleep(retry_after)
+                r = requests.post(url, params=params or {}, json=payload, headers=headers, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            _cache_set(cache_key, data)
+            if base_url != cfg["base_url"]:
+                print(f"[ensembl] POST {path} resolved via fallback {base_url}", file=sys.stderr)
+            return data
+        except Exception as e:
+            print(f"[ensembl] POST {base_url}{path} failed: {e}", file=sys.stderr)
+    return None
+
+
+def _chunks(items: list[str], size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
 # === Public API: 5 endpoints ===
 
 def lookup_gene(symbol: str, use_cache: bool = True) -> dict | None:
@@ -224,6 +257,77 @@ def _build_gene_record(symbol: str, data: dict) -> dict:
         "strand": data.get("strand"),
         "description": data.get("description"),
     }
+
+
+def lookup_genes_by_id_batch(
+    ensembl_ids: list[str],
+    use_cache: bool = True,
+    batch_size: int | None = None,
+    on_progress=None,
+) -> dict[str, dict]:
+    """Batch POST /lookup/id for up to 1,000 Ensembl IDs per request."""
+    ids = [x for x in dict.fromkeys(ensembl_ids or []) if x]
+    if not ids:
+        return {}
+    size = batch_size or int(_get_cfg().get("batch_size", 1000))
+    out: dict[str, dict] = {}
+    fetched = 0
+    for chunk in _chunks(ids, size):
+        data = _post("/lookup/id", {"ids": chunk}, {"expand": 0}, use_cache)
+        if isinstance(data, dict):
+            out.update({k: v for k, v in data.items() if isinstance(v, dict)})
+        fetched += len(chunk)
+        if on_progress:
+            on_progress(min(fetched, len(ids)), len(ids))
+    return out
+
+
+def fetch_orthologs_by_id_batch(
+    ensembl_ids: list[str],
+    target_taxon: int = 40674,
+    use_cache: bool = True,
+    batch_size: int | None = None,
+    on_progress=None,
+) -> dict[str, list[dict]]:
+    """Batch POST /homology/id for multiple Ensembl IDs."""
+    ids = [x for x in dict.fromkeys(ensembl_ids or []) if x]
+    if not ids:
+        return {}
+    size = batch_size or int(_get_cfg().get("batch_size", 1000))
+    out: dict[str, list[dict]] = {}
+    fetched = 0
+    for chunk in _chunks(ids, size):
+        data = _post(
+            "/homology/id",
+            {"ids": chunk},
+            {"type": "orthologues", "target_taxon": target_taxon, "format": "full"},
+            use_cache,
+        )
+        entries = data.get("data", []) if isinstance(data, dict) else []
+        for entry in entries:
+            source_id = entry.get("id")
+            homologies = entry.get("homologies", [])
+            parsed = []
+            for h in homologies:
+                target = h.get("target", {})
+                parsed.append({
+                    "target_species": target.get("species"),
+                    "target_id": target.get("id"),
+                    "target_protein_id": target.get("protein_id"),
+                    "ortholog_type": h.get("type"),
+                    "perc_id": target.get("perc_id"),
+                    "perc_pos": target.get("perc_pos"),
+                    "dn": h.get("dn"),
+                    "ds": h.get("ds"),
+                    "dnds": _dnds(h),
+                    "method_link_type": h.get("method_link_type"),
+                })
+            if source_id:
+                out[source_id] = parsed
+        fetched += len(chunk)
+        if on_progress:
+            on_progress(min(fetched, len(ids)), len(ids))
+    return out
 
 
 def _dnds(homology: dict) -> float | None:

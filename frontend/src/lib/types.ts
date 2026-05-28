@@ -135,6 +135,11 @@ export interface AnalystSetStats {
   dnds_mean: number | null
   dnds_stdev: number | null
   dnds_max: number | null
+  omega_foreground_n?: number
+  omega_foreground_mean?: number | null
+  acceleration_ratio_n?: number
+  acceleration_ratio_mean?: number | null
+  foreground_label?: string | null
   dnds_diagnostics?: {
     genes_with_orthologs: number
     genes_with_dnds: number
@@ -227,8 +232,13 @@ export interface PamlGeneResult {
   status: string
   gene?: string
   omega_foreground?: number | null
+  omega_background?: number | null
+  acceleration_ratio?: number | null
   lrt_chi2?: number | null
+  lrt_statistic?: number | null
   lrt_pvalue?: number | null
+  alignment_length?: number
+  species_count?: number
   n_species?: number
   foreground_species?: string[]
   foreground_group?: string

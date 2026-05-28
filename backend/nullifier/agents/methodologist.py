@@ -80,6 +80,8 @@ def _build_user_prompt(
             "groups: {<group>: {<metric>: [values]}} "
             "— names: starter, expanded.<set>, controls.<set>; "
             "Ensembl metrics: dnds, ortholog_count, paralog_count, duplication_count, regulatory_feature_count. "
+            "PAML metrics when available: omega_foreground, omega_background, acceleration_ratio. "
+            "For lineage-specific hypotheses, request paml_branch_model and compare omega_foreground or acceleration_ratio across sets. "
             "gnomAD constraint (None when unavailable): "
             "loeuf (LOEUF score — lower = more constrained, intolerant to LoF); "
             "pli (pLI — probability of LoF intolerance, 0–1). "

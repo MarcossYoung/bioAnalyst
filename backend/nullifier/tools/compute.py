@@ -576,13 +576,12 @@ def _paml_branch_model(inputs: dict, data: dict) -> dict:
             method="PAML codeml branch model 2 LRT",
         )
     best = min(computed, key=lambda x: x.get("lrt_pvalue", 1.0))
-    from scipy.stats import chi2 as _chi2
     return {
         **_test_result(
             "paml_branch_model",
             available=True,
             n=len(computed),
-            statistic=best["lrt_chi2"],
+            statistic=best.get("lrt_statistic", best.get("lrt_chi2")),
             p_value=best["lrt_pvalue"],
             significant=best["lrt_pvalue"] < 0.05,
             effect_size=best.get("omega_foreground"),
@@ -596,6 +595,13 @@ def _paml_branch_model(inputs: dict, data: dict) -> dict:
         ),
         "per_gene": paml,
         "foreground_group": inputs.get("foreground", "primates"),
+        "details": {
+            "best_gene": best.get("gene"),
+            "omega_foreground": best.get("omega_foreground"),
+            "omega_background": best.get("omega_background"),
+            "acceleration_ratio": best.get("acceleration_ratio"),
+            "computed_genes": len(computed),
+        },
     }
 
 
@@ -627,6 +633,8 @@ TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the sup
 - paml_branch_model  inputs: {"foreground": "primates"|"rodents"|"human"}.
   Use when hypothesis involves lineage-specific acceleration or purifying selection.
   Degrades gracefully (available=False) when codeml binary is not installed.
+- dN/dS distribution tests use the normal group tests with metric "omega_foreground"
+  or "acceleration_ratio" (Kruskal-Wallis, Mann-Whitney posthoc, Spearman).
 Corrections: "benjamini_hochberg" (default for multi-test families), "bonferroni", "holm", "none"."""
 
 

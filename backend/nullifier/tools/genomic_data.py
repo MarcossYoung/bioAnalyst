@@ -7,11 +7,13 @@ from statistics import mean
 
 
 METRICS = ("dnds", "ortholog_count", "paralog_count", "duplication_count",
-           "regulatory_feature_count", "loeuf", "pli", "phylo_age")
+           "regulatory_feature_count", "loeuf", "pli", "phylo_age",
+           "omega_foreground", "omega_background", "acceleration_ratio")
 
 
 def per_gene_metrics(gene_data: dict, gnomad_data: dict | None = None,
-                     phylo_data: dict | None = None) -> dict:
+                     phylo_data: dict | None = None,
+                     paml_data: dict | None = None) -> dict:
     """gene_symbol -> {metric -> value or None}."""
     out: dict = {}
     for g, d in (gene_data or {}).items():
@@ -22,6 +24,7 @@ def per_gene_metrics(gene_data: dict, gnomad_data: dict | None = None,
                      if o.get("dnds") is not None and o["dnds"] < 10]
         constraint = (gnomad_data or {}).get(g) or {}
         phylo = (phylo_data or {}).get(g) or {}
+        paml = (paml_data or {}).get(g) or {}
         out[g] = {
             "dnds": mean(dnds_vals) if dnds_vals else None,
             "ortholog_count": len(d.get("orthologs") or []),
@@ -31,6 +34,9 @@ def per_gene_metrics(gene_data: dict, gnomad_data: dict | None = None,
             "loeuf": constraint.get("loeuf"),
             "pli": constraint.get("pli"),
             "phylo_age": phylo.get("phylostratum"),
+            "omega_foreground": paml.get("omega_foreground") if paml.get("status") == "computed" else None,
+            "omega_background": paml.get("omega_background") if paml.get("status") == "computed" else None,
+            "acceleration_ratio": paml.get("acceleration_ratio") if paml.get("status") == "computed" else None,
         }
     return out
 
@@ -52,7 +58,8 @@ def _all_genes_in_order(expansion: dict) -> list:
 
 
 def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
-               gnomad_data: dict | None = None, phylo_data: dict | None = None) -> dict:
+               gnomad_data: dict | None = None, phylo_data: dict | None = None,
+               paml_data: dict | None = None) -> dict:
     """Build the ``data`` dict shape ``compute.run_analysis_plan`` expects.
 
     groups: one per starter / expanded.<set> / controls.<set>, each carrying every
@@ -61,7 +68,7 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
     (the union of all set genes), so xy-tests (spearman/pearson) can run across genes.
     """
     excl = {g.upper() for g in (exclude or set())}
-    per = per_gene_metrics(gene_data, gnomad_data, phylo_data)
+    per = per_gene_metrics(gene_data, gnomad_data, phylo_data, paml_data)
 
     def _filtered(genes):
         return [g for g in (genes or []) if g.upper() not in excl]
@@ -87,6 +94,8 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                    if v and v.get("loeuf") is not None)
     phylo_n = sum(1 for v in (phylo_data or {}).values()
                   if v and v.get("phylostratum") is not None)
+    paml_n = sum(1 for v in (paml_data or {}).values()
+                 if v and v.get("status") == "computed")
 
     _src_counts: dict[str, int] = {"symbol": 0, "ensg_fallback": 0, "not_in_compara": 0, "no_mammal_orthologs": 0}
     for d in (gene_data or {}).values():
@@ -119,6 +128,11 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 "genes_not_in_compara": _src_counts["not_in_compara"],
                 "total_genes": len(gene_index),
             },
+            "paml": {
+                "source": "paml_codeml",
+                "genes_computed": paml_n,
+                "total_genes": len(paml_data or {}),
+            } if paml_data else None,
         },
     }
 

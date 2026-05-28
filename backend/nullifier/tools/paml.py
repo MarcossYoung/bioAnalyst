@@ -20,6 +20,8 @@ _FOREGROUND_GROUPS = {
     "primates": {"Homo_sapiens", "Pan_troglodytes", "Gorilla_gorilla",
                  "Macaca_mulatta", "Papio_anubis"},
     "rodents":  {"Mus_musculus", "Rattus_norvegicus"},
+    "cetaceans": {"Tursiops_truncatus", "Orcinus_orca", "Physeter_catodon"},
+    "chiroptera": {"Myotis_lucifugus", "Pteropus_vampyrus"},
     "human":    {"Homo_sapiens"},
 }
 
@@ -27,6 +29,8 @@ _MAMMAL_SPECIES = {
     "Homo_sapiens", "Pan_troglodytes", "Gorilla_gorilla", "Macaca_mulatta",
     "Papio_anubis", "Mus_musculus", "Rattus_norvegicus", "Bos_taurus",
     "Sus_scrofa", "Canis_lupus_familiaris", "Felis_catus", "Equus_caballus",
+    "Tursiops_truncatus", "Orcinus_orca", "Physeter_catodon", "Myotis_lucifugus",
+    "Pteropus_vampyrus",
 }
 
 
@@ -122,10 +126,10 @@ def _write_control(workdir: str, model: int, seqfile: str, treefile: str, outfil
     return ctl
 
 
-def _run_codeml(ctl_path: str, workdir: str, timeout: int = 300) -> bool:
+def _run_codeml(ctl_path: str, workdir: str, timeout: int = 300):
     binary = shutil.which("codeml")
     if not binary:
-        return False
+        return "unavailable"
     try:
         result = subprocess.run(
             [binary, ctl_path],
@@ -133,9 +137,11 @@ def _run_codeml(ctl_path: str, workdir: str, timeout: int = 300) -> bool:
             timeout=timeout,
             capture_output=True,
         )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
+        return "ok" if result.returncode == 0 else "error"
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except OSError:
+        return "error"
 
 
 def _parse_lnl(mlc_path: str) -> float | None:
@@ -171,6 +177,27 @@ def _parse_omega_foreground(mlc_path: str) -> float | None:
     return None
 
 
+def _parse_omega_background(mlc_path: str) -> float | None:
+    """Parse background omega from branch-model output (first branch omega value)."""
+    try:
+        with open(mlc_path) as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines):
+            if "dN/dS) for branches" in line:
+                nums = []
+                for j in range(i, min(i + 5, len(lines))):
+                    for tok in lines[j].split():
+                        try:
+                            nums.append(float(tok))
+                        except ValueError:
+                            pass
+                if nums:
+                    return nums[0]
+    except OSError:
+        pass
+    return None
+
+
 # ── top-level function ───────────────────────────────────────────────────────
 
 def run_branch_model(
@@ -194,6 +221,7 @@ def run_branch_model(
         if sp in _MAMMAL_SPECIES and len(seq) % 3 == 0 and len(seq) > 0
     }
     fg_present = {sp for sp in seqs if sp in fg_set}
+    bg_present = {sp for sp in seqs if sp not in fg_set}
     if not fg_present:
         return {
             "status": "no_foreground_seqs", "gene": gene_symbol,
@@ -217,14 +245,19 @@ def run_branch_model(
 
         # null model — one ratio (model=0)
         ctl0 = _write_control(workdir, 0, seq_path, tree_path, "null_mlc")
-        _run_codeml(ctl0, workdir)
+        status0 = _run_codeml(ctl0, workdir)
+        if status0 == "timeout":
+            return {"status": "timeout", "gene": gene_symbol, "timeout_seconds": 300}
         lnl0 = _parse_lnl(os.path.join(workdir, "null_mlc"))
 
         # alternative model — branch model 2
         ctl2 = _write_control(workdir, 2, seq_path, tree_path, "alt_mlc")
-        _run_codeml(ctl2, workdir)
+        status2 = _run_codeml(ctl2, workdir)
+        if status2 == "timeout":
+            return {"status": "timeout", "gene": gene_symbol, "timeout_seconds": 300}
         lnl2     = _parse_lnl(os.path.join(workdir, "alt_mlc"))
         omega_fg = _parse_omega_foreground(os.path.join(workdir, "alt_mlc"))
+        omega_bg = _parse_omega_background(os.path.join(workdir, "alt_mlc"))
 
     if lnl0 is None or lnl2 is None:
         return {"status": "error", "gene": gene_symbol, "note": "codeml output unreadable"}
@@ -236,12 +269,28 @@ def run_branch_model(
         "status": "computed",
         "gene": gene_symbol,
         "omega_foreground": omega_fg,
+        "omega_background": omega_bg,
+        "acceleration_ratio": (
+            round(float(omega_fg) / float(omega_bg), 6)
+            if omega_fg is not None and omega_bg not in (None, 0) else None
+        ),
+        "lrt_statistic": round(lrt, 4),
         "lrt_chi2": round(lrt, 4),
         "lrt_pvalue": round(pval, 6),
+        "alignment_length": len(next(iter(seqs.values()))) // 3 if seqs else 0,
+        "species_count": len(seqs),
         "n_species": len(seqs),
+        "foreground_label": foreground,
         "foreground_species": sorted(fg_present),
+        "background_species": sorted(bg_present),
         "foreground_group": foreground,
         "newick": aligned.get("newick"),
+        "provenance": {
+            "paml": "codeml",
+            "control_file_hash": hashlib.sha1(cache_key.encode()).hexdigest()[:12],
+            "alignment_source": aligned.get("source", "ensembl_compara_genetree"),
+            "tree_source": aligned.get("tree_source", "ensembl_compara_genetree"),
+        },
     }
     if use_cache:
         _cache_set(cache_key, result)

@@ -65,7 +65,7 @@ Propose the single most decisive experiment or analysis."""
 SKEPTIC_DNDS_LIMITATION = (
     "Known data limitation: recent Ensembl Compara homology responses often omit dn/ds, "
     "so missing pairwise dN/dS should not lower the methodological score by itself. "
-    "Branch-specific dN/dS via PAML is planned for v7.5."
+    "When PAML branch-model omega is available, use it when considering evolutionary acceleration alternatives."
 )
 
 

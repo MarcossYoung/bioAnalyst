@@ -177,6 +177,27 @@ def analyst_paml_complete(n_computed: int, total: int) -> Event:
     return Event("analyst_paml_complete", {"n_computed": n_computed, "total": total})
 
 
+def paml_gene_started(gene: str, foreground: str) -> Event:
+    return Event("paml.gene_started", {"gene": gene, "foreground": foreground})
+
+
+def paml_gene_complete(gene: str, omega_foreground, omega_background, lrt_pvalue) -> Event:
+    return Event("paml.gene_complete", {
+        "gene": gene,
+        "omega_foreground": omega_foreground,
+        "omega_background": omega_background,
+        "lrt_pvalue": lrt_pvalue,
+    })
+
+
+def paml_gene_timeout(gene: str) -> Event:
+    return Event("paml.gene_timeout", {"gene": gene})
+
+
+def ensembl_batch_progress(fetched: int, total: int) -> Event:
+    return Event("ensembl.batch_progress", {"fetched": fetched, "total": total})
+
+
 def analyst_ready(assessment: str) -> Event:
     return Event("analyst_ready", {"overall_genomic_assessment": assessment})
 
