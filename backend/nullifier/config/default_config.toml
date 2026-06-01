@@ -46,6 +46,9 @@ enabled = true
 r_home = ""  # auto-detect if empty; set manually if R is in a non-standard location
 required_packages = ["ape", "phangorn", "seqinr", "caper"]
 
+[paml]
+codeml_path = ""  # auto-detect from PATH if empty; set manually if codeml is elsewhere
+
 [literature]
 max_papers_per_claim = 12
 max_per_source = 3

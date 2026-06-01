@@ -10,6 +10,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from ..config.loader import load_config
+
 _CACHE_PATH = Path.home() / ".nullifier" / "paml_cache.db"
 _CACHE_TTL_DAYS = 90
 
@@ -32,6 +34,19 @@ _MAMMAL_SPECIES = {
     "Tursiops_truncatus", "Orcinus_orca", "Physeter_catodon", "Myotis_lucifugus",
     "Pteropus_vampyrus",
 }
+
+
+def _find_codeml() -> str | None:
+    configured = (
+        load_config()
+        .get("paml", {})
+        .get("codeml_path", "")
+    ).strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if path.exists():
+            return str(path)
+    return shutil.which("codeml")
 
 
 # ── cache ────────────────────────────────────────────────────────────────────
@@ -127,7 +142,7 @@ def _write_control(workdir: str, model: int, seqfile: str, treefile: str, outfil
 
 
 def _run_codeml(ctl_path: str, workdir: str, timeout: int = 300):
-    binary = shutil.which("codeml")
+    binary = _find_codeml()
     if not binary:
         return "unavailable"
     try:
@@ -233,7 +248,7 @@ def run_branch_model(
     if use_cache and (hit := _cache_get(cache_key)):
         return hit
 
-    if not shutil.which("codeml"):
+    if not _find_codeml():
         return {"status": "codeml_unavailable", "gene": gene_symbol}
 
     with tempfile.TemporaryDirectory() as workdir:

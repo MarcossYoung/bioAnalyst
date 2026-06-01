@@ -31,7 +31,7 @@ _RODENT_ONLY = {
 
 
 def test_codeml_unavailable():
-    with patch("shutil.which", return_value=None):
+    with patch("nullifier.tools.paml._find_codeml", return_value=None):
         r = run_branch_model("ENSG00000001", "BRCA1", _PRIMATE_ALIGNED, use_cache=False)
     assert r["status"] == "codeml_unavailable"
     assert r["gene"] == "BRCA1"
