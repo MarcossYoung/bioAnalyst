@@ -633,9 +633,12 @@ TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the sup
 - paml_branch_model  inputs: {"foreground": "primates"|"rodents"|"human"}.
   Use when hypothesis involves lineage-specific acceleration or purifying selection.
   Degrades gracefully (available=False) when codeml binary is not installed.
-- dN/dS distribution tests use the normal group tests with metric "omega_foreground"
-  or "acceleration_ratio" (Kruskal-Wallis, Mann-Whitney posthoc, Spearman).
-Corrections: "benjamini_hochberg" (default for multi-test families), "bonferroni", "holm", "none"."""
+- Pairwise dN/dS is available as metric/variable "dnds" when R seqinr or Ensembl
+  supplies values. For coordinated-rate hypotheses, request spearman with
+  {"x": "dnds", "y": "<other aligned variable>"} or group tests with metric "dnds".
+- Branch-model omega distribution tests use metric "omega_foreground" or
+  "acceleration_ratio" (Kruskal-Wallis, Mann-Whitney posthoc, Spearman).
+Corrections: "benjamini_hochberg" (default for multi-test families), "bonferroni", "holm", "none".""" 
 
 
 def _is_numeric_list(v) -> bool:

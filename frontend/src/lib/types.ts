@@ -149,6 +149,7 @@ export interface AnalystSetStats {
     orthologs_missing_ds: number
     orthologs_invalid_ds: number
     orthologs_filtered_high: number
+    dnds_source_counts?: Record<string, number>
   }
 }
 
@@ -255,7 +256,15 @@ export interface PhyloEntry {
 export interface DataProvenance {
   gnomad?: { source: string; genome_build: string; genes_with_loeuf: number; total_genes: number } | null
   phylo?: { source: string; version: string; genes_with_age: number; total_genes: number } | null
-  compara?: { source: string; genes_with_orthologs: number; total_genes: number } | null
+  compara?: {
+    source: string
+    genes_with_orthologs: number
+    genes_via_ensg_fallback?: number
+    genes_not_in_compara?: number
+    dnds_source_counts?: Record<string, number>
+    total_genes: number
+  } | null
+  paml?: { source: string; genes_computed: number; total_genes: number } | null
 }
 
 export interface ComputeTest {

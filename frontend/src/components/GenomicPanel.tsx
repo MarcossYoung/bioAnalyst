@@ -49,10 +49,15 @@ const Chip = ({ children, scheme = 'blue' }: { children: React.ReactNode; scheme
 
 function SetStats({ stats }: { stats: AnalystSetStats }) {
   const diag = stats.dnds_diagnostics
+  const sourceCounts = diag?.dnds_source_counts ?? {}
+  const sourceLabel = Object.entries(sourceCounts)
+    .filter(([, n]) => n > 0)
+    .map(([source, n]) => `${source === 'r_seqinr_kaks' ? 'R seqinr' : 'Ensembl'} ${n}`)
+    .join(', ')
   const dndsMissingNote = diag && stats.dnds_n === 0
     ? diag.orthologs_total === 0
       ? 'no orthologs returned'
-      : `0/${diag.orthologs_total} orthologs had usable dn/ds`
+      : `0/${diag.orthologs_total} orthologs had usable dN/dS from Ensembl or R seqinr`
     : null
   const num = (n: number | null | undefined, d = 1) => (typeof n === 'number' ? n.toFixed(d) : '—')
   return (
@@ -63,7 +68,10 @@ function SetStats({ stats }: { stats: AnalystSetStats }) {
     }}>
       <span>{stats.valid_gene_count} gene(s) · {num(stats.mean_ortholog_count)} orthologs avg</span>
       <span>{num(stats.mean_paralog_count)} paralogs · {num(stats.mean_duplication_count)} dups avg</span>
-      <span>dN/dS: {stats.dnds_n > 0 && typeof stats.dnds_mean === 'number' ? stats.dnds_mean.toFixed(3) : 'n/a'}</span>
+      <span>
+        dN/dS: {stats.dnds_n > 0 && typeof stats.dnds_mean === 'number' ? stats.dnds_mean.toFixed(3) : 'n/a'}
+        {sourceLabel ? ` (${sourceLabel})` : ''}
+      </span>
       <span>foreground ω: {stats.omega_foreground_n && typeof stats.omega_foreground_mean === 'number' ? stats.omega_foreground_mean.toFixed(3) : 'n/a'}{stats.foreground_label ? ` (${stats.foreground_label})` : ''}</span>
       <span>acceleration ratio: {stats.acceleration_ratio_n && typeof stats.acceleration_ratio_mean === 'number' ? stats.acceleration_ratio_mean.toFixed(2) : 'n/a'}</span>
       {diag && (
@@ -71,7 +79,7 @@ function SetStats({ stats }: { stats: AnalystSetStats }) {
           dN/dS coverage: {diag.genes_with_dnds}/{stats.valid_gene_count} genes, {diag.orthologs_with_dnds}/{diag.orthologs_total} orthologs
         </span>
       )}
-      {dndsMissingNote && <span>{dndsMissingNote}; branch-model ω is computed via PAML when a sufficient Compara alignment is available.</span>}
+      {dndsMissingNote && <span>{dndsMissingNote}; pairwise dN/dS uses R seqinr when Compara alignments are available, while branch-model ω remains the secondary PAML path.</span>}
     </div>
   )
 }

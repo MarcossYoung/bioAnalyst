@@ -48,9 +48,11 @@ npm run build   # outputs to backend/nullifier/static/
 cd ..
 ```
 
-### R + PAML for Branch-Model dN/dS
+### R seqinr for Pairwise dN/dS, PAML for Branch-Model Omega
 
-v7.5 can compute lineage-specific branch-model omega via PAML `codeml`.
+v7.6 computes pairwise dN/dS with R `seqinr::kaks` from Ensembl Compara aligned CDS. This is the primary evolutionary-rate source used for set-level `dnds_mean` and Spearman/other statistical tests. It does not require `codeml`.
+
+v7.5+ can also compute lineage-specific branch-model omega via PAML `codeml` when installed. That path is secondary and degrades gracefully when `codeml` is unavailable.
 
 Install R 4.0+:
 
@@ -70,6 +72,16 @@ Install required R packages once:
 install.packages(c("ape", "phangorn", "seqinr", "caper"))
 ```
 
+Install Python R bindings:
+
+```bash
+pip install rpy2
+```
+
+Set `[r].r_home` in `~/.nullifier/config.toml` if R is installed in a non-standard location.
+
+#### Optional: Installing codeml (PAML)
+
 Install PAML so `codeml` is on `PATH`:
 
 ```bash
@@ -80,8 +92,7 @@ brew install paml
 sudo apt install paml
 ```
 
-The startup health endpoint reports missing R packages and missing `codeml`.
-Set `[r].r_home` in `~/.nullifier/config.toml` if R is installed in a non-standard location.
+The startup health endpoint reports missing R packages and whether `codeml` is on `PATH`. Missing `codeml` disables only the secondary PAML branch-model omega calculation; pairwise dN/dS still runs through R/seqinr.
 
 ### API Keys
 

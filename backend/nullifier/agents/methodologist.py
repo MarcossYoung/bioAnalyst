@@ -79,7 +79,9 @@ def _build_user_prompt(
         "data_shape": (
             "groups: {<group>: {<metric>: [values]}} "
             "— names: starter, expanded.<set>, controls.<set>; "
-            "Ensembl metrics: dnds, ortholog_count, paralog_count, duplication_count, regulatory_feature_count. "
+            "Evolutionary metrics: dnds (pairwise dN/dS from R seqinr when Compara alignments exist, Ensembl fallback), "
+            "ortholog_count, paralog_count, duplication_count, regulatory_feature_count. "
+            "For coordinated-rate hypotheses, prefer spearman/pearson over variable dnds and another aligned variable when n permits. "
             "PAML metrics when available: omega_foreground, omega_background, acceleration_ratio. "
             "For lineage-specific hypotheses, request paml_branch_model and compare omega_foreground or acceleration_ratio across sets. "
             "gnomAD constraint (None when unavailable): "

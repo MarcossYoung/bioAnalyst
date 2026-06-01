@@ -98,10 +98,16 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                  if v and v.get("status") == "computed")
 
     _src_counts: dict[str, int] = {"symbol": 0, "ensg_fallback": 0, "not_in_compara": 0, "no_mammal_orthologs": 0}
+    _dnds_source_counts: dict[str, int] = {}
     for d in (gene_data or {}).values():
         src = (d or {}).get("_homology_source", "symbol")
         if src in _src_counts:
             _src_counts[src] += 1
+        for ortholog in (d or {}).get("orthologs") or []:
+            dnds = ortholog.get("dnds")
+            if dnds is not None and dnds < 10:
+                source = ortholog.get("dnds_source") or "ensembl_compara"
+                _dnds_source_counts[source] = _dnds_source_counts.get(source, 0) + 1
 
     return {
         "groups": groups,
@@ -126,6 +132,7 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 "genes_with_orthologs": _src_counts["symbol"] + _src_counts["ensg_fallback"],
                 "genes_via_ensg_fallback": _src_counts["ensg_fallback"],
                 "genes_not_in_compara": _src_counts["not_in_compara"],
+                "dnds_source_counts": _dnds_source_counts,
                 "total_genes": len(gene_index),
             },
             "paml": {

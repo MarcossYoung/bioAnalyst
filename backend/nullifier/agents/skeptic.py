@@ -63,8 +63,9 @@ Use NOVEL-UNTESTED when novelty_flag is unstudied across claims.
 Propose the single most decisive experiment or analysis."""
 
 SKEPTIC_DNDS_LIMITATION = (
-    "Known data limitation: recent Ensembl Compara homology responses often omit dn/ds, "
-    "so missing pairwise dN/dS should not lower the methodological score by itself. "
+    "Known data limitation: pairwise dN/dS is R-computed with seqinr::kaks when a Compara "
+    "alignment exists, with Ensembl homology dn/ds fields as fallback. Missing pairwise "
+    "dN/dS is a coverage limitation and should not lower the methodological score by itself. "
     "When PAML branch-model omega is available, use it when considering evolutionary acceleration alternatives."
 )
 

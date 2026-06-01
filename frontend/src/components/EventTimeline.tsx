@@ -15,8 +15,10 @@ const STAGE_KEY: Record<string, string> = {
   analyst_started: 'analyst', analyst_gene_fetched: 'analyst',
   analyst_symbol_resolved: 'analyst', analyst_phylo_loaded: 'analyst',
   analyst_gnomad_fetched: 'analyst', analyst_paml_complete: 'analyst',
+  analyst_rdnds_complete: 'analyst',
   'paml.gene_started': 'analyst', 'paml.gene_complete': 'analyst',
-  'paml.gene_timeout': 'analyst', 'ensembl.batch_progress': 'analyst',
+  'paml.gene_timeout': 'analyst', 'rdnds.gene_started': 'analyst',
+  'rdnds.gene_complete': 'analyst', 'ensembl.batch_progress': 'analyst',
   analyst_ready: 'analyst', analyst_skipped: 'analyst',
   analyst_reproducibility_check_start: 'analyst', analyst_reproducibility_check_complete: 'analyst',
   gene_sets_expanded: 'methodologist', methodologist_plan_complete: 'methodologist',
@@ -81,6 +83,9 @@ function eventLabel(ev: WsEvent): string {
     case 'paml.gene_started':     return `PAML: ${p.gene} (${p.foreground})`
     case 'paml.gene_complete':    return `PAML: ${p.gene} ω=${typeof p.omega_foreground === 'number' ? p.omega_foreground.toFixed(3) : 'n/a'}`
     case 'paml.gene_timeout':     return `PAML timeout: ${p.gene}`
+    case 'rdnds.gene_started':    return `R dN/dS: ${p.gene}`
+    case 'rdnds.gene_complete':   return `R dN/dS: ${p.gene} (${p.species_count} species)`
+    case 'analyst_rdnds_complete': return `R dN/dS: ${p.genes_with_dnds}/${p.total} genes, ${p.orthologs_attached} orthologs`
     case 'analyst_ready':         return `genomic: ${p.overall_genomic_assessment}`
     case 'analyst_skipped':       return `analyst skipped (${p.reason})`
     case 'gene_sets_expanded':    return `gene sets: ${p.total_expanded} expanded, ${p.total_controls} controls`
@@ -109,7 +114,7 @@ function rowColor(type: string): string {
   if (type === 'run_aborted')   return '#94a3b8'
   if (type === 'run_completed') return '#86efac'
   if (type === 'verdict_ready') return '#fcd34d'
-  if (type.includes('analyst') || type.startsWith('paml.') || type === 'ensembl.batch_progress') return '#67e8f9'
+  if (type.includes('analyst') || type.startsWith('paml.') || type.startsWith('rdnds.') || type === 'ensembl.batch_progress') return '#67e8f9'
   if (type === 'paper_classified' || type === 'analyst_gene_fetched' || type === 'compute_test_complete') return '#475569'
   if (type.startsWith('compute_') || type === 'gene_sets_expanded' || type === 'methodologist_plan_complete') return '#a5b4fc'
   if (type.startsWith('interpreter')) return '#67e8f9'

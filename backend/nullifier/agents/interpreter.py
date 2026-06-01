@@ -23,7 +23,7 @@ INTERPRETER_SPEC = AgentSpec(
         "Every numeric claim must trace back to a value in the inputs.",
         "For each available computed test, cite the typed effect_size/effect_size_label fields and ci_lower/ci_upper fields when interpreting the result.",
         "If an available computed test has null effect-size or confidence-interval fields, state that the typed result does not provide them instead of inventing them.",
-        "Ensembl pairwise dN/dS may be unavailable because recent Compara responses often omit dn/ds; describe this as a data-source limitation, not as evidence against the hypothesis.",
+        "Pairwise dN/dS is R-computed with seqinr::kaks when Compara alignments are available, with Ensembl dn/ds fields as a fallback source; describe missing values as coverage limitations, not evidence against the hypothesis.",
         "When paml_branch_model or omega metrics are present, interpret omega_foreground, omega_background, acceleration_ratio, and LRT p-values as branch-model PAML results.",
         "For PAML limitations, state that genes without sufficient alignment depth or successful codeml runs were excluded.",
         "Regulatory overlap is Jaccard-style and not statistically normalized.",
@@ -142,7 +142,7 @@ def _build_user_prompt(
         tree = d.get("gene_tree") or {}
         reg = d.get("regulatory_features") or []
         dnds_vals = [o["dnds"] for o in orthologs if o.get("dnds") is not None and o["dnds"] < 10]
-        dnds_mean = f"{mean(dnds_vals):.3f}" if dnds_vals else "n/a (Ensembl Compara dn/ds not populated for returned orthologs)"
+        dnds_mean = f"{mean(dnds_vals):.3f}" if dnds_vals else "n/a (no usable pairwise dN/dS from R seqinr or Ensembl for returned orthologs)"
         per_gene_lines.append(
             f"  {g}: orthologs={len(orthologs)}, paralogs={len(paralogs)}, "
             f"duplications={tree.get('duplication_count', 0)}, "

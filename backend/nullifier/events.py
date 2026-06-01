@@ -177,6 +177,14 @@ def analyst_paml_complete(n_computed: int, total: int) -> Event:
     return Event("analyst_paml_complete", {"n_computed": n_computed, "total": total})
 
 
+def analyst_rdnds_complete(genes_with_dnds: int, total: int, orthologs_attached: int) -> Event:
+    return Event("analyst_rdnds_complete", {
+        "genes_with_dnds": genes_with_dnds,
+        "total": total,
+        "orthologs_attached": orthologs_attached,
+    })
+
+
 def paml_gene_started(gene: str, foreground: str) -> Event:
     return Event("paml.gene_started", {"gene": gene, "foreground": foreground})
 
@@ -192,6 +200,14 @@ def paml_gene_complete(gene: str, omega_foreground, omega_background, lrt_pvalue
 
 def paml_gene_timeout(gene: str) -> Event:
     return Event("paml.gene_timeout", {"gene": gene})
+
+
+def rdnds_gene_started(gene: str) -> Event:
+    return Event("rdnds.gene_started", {"gene": gene})
+
+
+def rdnds_gene_complete(gene: str, species_count: int) -> Event:
+    return Event("rdnds.gene_complete", {"gene": gene, "species_count": species_count})
 
 
 def ensembl_batch_progress(fetched: int, total: int) -> Event:

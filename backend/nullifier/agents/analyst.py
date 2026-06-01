@@ -90,6 +90,73 @@ def _fetch_paml_data(
     return results
 
 
+def _fetch_rdnds_data(
+    gene_data: dict,
+    genes: list[str],
+    use_cache: bool = True,
+    on_event=None,
+) -> dict:
+    """Fetch Compara alignments in parallel, then run seqinr::kaks serially."""
+    from ..tools import r_bridge
+
+    jobs = {}
+    for sym in genes:
+        d = gene_data.get(sym, {})
+        if "_error" in d:
+            continue
+        ensg = (d.get("info") or {}).get("ensembl_id")
+        if ensg:
+            jobs[sym] = ensg
+
+    alignments: dict[str, dict | None] = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {
+            pool.submit(ensembl.fetch_gene_tree_aligned, ensg, use_cache): sym
+            for sym, ensg in jobs.items()
+        }
+        for fut in as_completed(futures):
+            sym = futures[fut]
+            try:
+                alignments[sym] = fut.result()
+            except Exception:
+                alignments[sym] = None
+
+    results: dict = {}
+    for sym in genes:
+        aligned = alignments.get(sym)
+        if not aligned:
+            results[sym] = None
+            continue
+        if on_event:
+            on_event(ev.rdnds_gene_started(sym))
+        dnds = r_bridge.pairwise_dnds(
+            aligned.get("sequences") or {},
+            reference="Homo_sapiens",
+            use_cache=use_cache,
+        )
+        results[sym] = dnds
+        if on_event:
+            on_event(ev.rdnds_gene_complete(sym, len(dnds or {})))
+    return results
+
+
+def _attach_rdnds_to_orthologs(gene_data: dict, rdnds_data: dict) -> int:
+    attached = 0
+    for gene, species_values in (rdnds_data or {}).items():
+        if not species_values:
+            continue
+        record = gene_data.get(gene) or {}
+        for ortholog in record.get("orthologs") or []:
+            target = str(ortholog.get("target_species") or "").lower()
+            if ortholog.get("dnds") is None and target in species_values:
+                ortholog["dnds"] = species_values[target]
+                ortholog["dnds_source"] = "r_seqinr_kaks"
+                attached += 1
+            elif ortholog.get("dnds") is not None and not ortholog.get("dnds_source"):
+                ortholog["dnds_source"] = "ensembl_compara"
+    return attached
+
+
 def _limit_targets(all_targets: list, expansion: dict) -> list:
     cfg = load_config().get("ensembl", {})
     limit = int(cfg.get("max_genes_for_full_analysis", 500))
@@ -161,6 +228,14 @@ def run_analyst(
         len(starter_entities),
     ))
 
+    rdnds_data = _fetch_rdnds_data(gene_data, all_targets, use_cache=use_cache, on_event=_emit)
+    rdnds_attached = _attach_rdnds_to_orthologs(gene_data, rdnds_data)
+    _emit(ev.analyst_rdnds_complete(
+        sum(1 for v in rdnds_data.values() if v),
+        len(all_targets),
+        rdnds_attached,
+    ))
+
     data = build_data(gene_data, expansion, gnomad_data=gnomad_data, phylo_data=phylo_data, paml_data=paml_data)
 
     set_a, set_b = _split_into_sets(formalized, starter_entities)
@@ -187,6 +262,7 @@ def run_analyst(
         "gnomad_data": gnomad_data,
         "phylo_data": phylo_data,
         "paml_data": paml_data,
+        "rdnds_data": rdnds_data,
         "set_a": set_a,
         "set_b": set_b,
         "set_a_stats": set_a_stats,
@@ -359,6 +435,7 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
         "orthologs_missing_ds": 0,
         "orthologs_invalid_ds": 0,
         "orthologs_filtered_high": 0,
+        "dnds_source_counts": {},
     }
     for g in valid:
         gene_has_dnds = False
@@ -382,6 +459,8 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
                 continue
             dnds_values.append(dnds)
             dnds_diag["orthologs_with_dnds"] += 1
+            source = o.get("dnds_source") or "ensembl_compara"
+            dnds_diag["dnds_source_counts"][source] = dnds_diag["dnds_source_counts"].get(source, 0) + 1
             gene_has_dnds = True
         if gene_has_dnds:
             dnds_diag["genes_with_dnds"] += 1
