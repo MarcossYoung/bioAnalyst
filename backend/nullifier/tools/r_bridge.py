@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
@@ -15,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from ..config.loader import load_config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -217,14 +221,103 @@ def _cache_key(seqs: dict[str, str], reference: str) -> str:
     return hashlib.sha1(payload.encode()).hexdigest()
 
 
-def _configure_r_home() -> bool:
-    cfg = load_config().get("r", {})
-    if not bool(cfg.get("enabled", True)):
-        return False
-    configured_home = (cfg.get("r_home") or "").strip()
-    if configured_home:
-        os.environ["R_HOME"] = configured_home
-    return True
+# seqinr::read.alignment + kaks. Reads a FASTA written by Python, prints
+# "<species>\t<dnds>" lines for the reference row. seqinr is a required package,
+# so no extra R deps (e.g. jsonlite) are introduced.
+_KAKS_R_SCRIPT = r"""
+args <- commandArgs(trailingOnly=TRUE)
+fasta <- args[1]
+ref <- args[2]
+suppressMessages(suppressWarnings(library(seqinr)))
+aln <- read.alignment(file=fasta, format="fasta")
+kk <- kaks(aln)
+ka <- kk$ka
+ks <- kk$ks
+if (is.null(ka) && is.list(kk) && length(kk) >= 2) { ka <- kk[[1]]; ks <- kk[[2]] }
+if (is.null(ka) || is.null(ks)) stop("unexpected kaks return shape")
+ka <- as.matrix(ka)
+ks <- as.matrix(ks)
+nm <- as.character(aln$nam)
+if (is.null(rownames(ka))) { rownames(ka) <- nm; colnames(ka) <- nm }
+if (is.null(rownames(ks))) { rownames(ks) <- nm; colnames(ks) <- nm }
+if (!(ref %in% rownames(ka)) || !(ref %in% rownames(ks))) stop("reference missing from alignment")
+for (sp in nm) {
+  if (sp == ref) next
+  if (!(sp %in% colnames(ka)) || !(sp %in% colnames(ks))) next
+  dn <- suppressWarnings(as.numeric(ka[ref, sp]))
+  ds <- suppressWarnings(as.numeric(ks[ref, sp]))
+  if (is.finite(dn) && is.finite(ds) && ds > 0) cat(sprintf("%s\t%.8f\n", sp, dn / ds))
+}
+"""
+
+
+def _run_kaks_rscript(
+    rscript: str,
+    seqs: dict[str, str],
+    reference: str,
+) -> dict[str, float] | None:
+    """Run seqinr::kaks via an Rscript subprocess; parse the reference row."""
+    with tempfile.TemporaryDirectory(prefix="nullifier_rdnds_") as tmp:
+        fasta_path = os.path.join(tmp, "aln.fasta")
+        script_path = os.path.join(tmp, "kaks.R")
+        with open(fasta_path, "w", encoding="ascii") as fh:
+            for name, seq in seqs.items():
+                fh.write(f">{name}\n{seq}\n")
+        with open(script_path, "w", encoding="ascii") as fh:
+            fh.write(_KAKS_R_SCRIPT)
+        try:
+            with _r_lock:
+                proc = subprocess.run(
+                    [rscript, "--vanilla", script_path, fasta_path, reference],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "pairwise_dnds: kaks timed out (ref=%s, %d seqs)", reference, len(seqs)
+            )
+            return None
+        except Exception as exc:  # pragma: no cover - launch failure
+            logger.warning("pairwise_dnds: could not launch Rscript: %s", exc)
+            return None
+
+    if proc.returncode != 0:
+        lines = [ln.strip() for ln in (proc.stderr or proc.stdout or "").splitlines() if ln.strip()]
+        # R prints "Error ...: <cause>" then "Execution halted"; surface the cause.
+        reason = next(
+            (ln for ln in lines if "Error" in ln),
+            lines[-1] if lines else "no Rscript output",
+        )
+        logger.warning(
+            "pairwise_dnds: kaks failed (rc=%s, ref=%s): %s",
+            proc.returncode,
+            reference,
+            reason,
+        )
+        return None
+
+    result: dict[str, float] = {}
+    for line in proc.stdout.splitlines():
+        sp, sep, val = line.strip().partition("\t")
+        if not sep:
+            continue
+        try:
+            v = float(val)
+        except ValueError:
+            continue
+        if math.isfinite(v) and v >= 0:
+            result[sp.lower()] = round(v, 6)
+
+    if not result:
+        logger.info(
+            "pairwise_dnds: kaks returned no finite dN/dS (ref=%s, %d seqs)",
+            reference,
+            len(seqs),
+        )
+        return None
+    return result
 
 
 def pairwise_dnds(
@@ -234,8 +327,11 @@ def pairwise_dnds(
 ) -> dict[str, float] | None:
     """Compute pairwise dN/dS from an aligned CDS dict using seqinr::kaks.
 
-    Returns lowercased species keys mapped to finite Ka/Ks values for the
-    reference row. All failures return None so callers degrade to missing dN/dS.
+    Runs R via an Rscript subprocess (the same bridge as the startup health
+    check) rather than rpy2, which mis-detects R on Windows when Git's sh.exe is
+    on PATH. Returns lowercased species keys mapped to finite Ka/Ks values for
+    the reference row; every failure logs a reason and returns None so callers
+    degrade cleanly to missing dN/dS.
     """
     seqs = _prepared_sequences(sequences, reference)
     if not seqs:
@@ -247,77 +343,19 @@ def pairwise_dnds(
         if cached:
             return cached
 
-    if not _configure_r_home():
+    cfg = load_config().get("r", {})
+    if not bool(cfg.get("enabled", True)):
+        logger.debug("pairwise_dnds: R integration disabled in config")
         return None
 
-    try:
-        from rpy2 import robjects
-        from rpy2.robjects import StrVector
-        from rpy2.robjects.packages import importr
-    except Exception:
+    rscript = _find_rscript((cfg.get("r_home") or "").strip())
+    if not rscript:
+        logger.warning(
+            "pairwise_dnds: Rscript not found; set [r].r_home or install R 4.0+"
+        )
         return None
 
-    try:
-        names = list(seqs.keys())
-        values = [seqs[name] for name in names]
-        with _r_lock:
-            importr("seqinr")
-            r_fn = robjects.r("""
-                function(nam, seq, ref) {
-                  aln <- list(nb=length(seq), nam=as.character(nam), seq=as.character(seq), com="")
-                  class(aln) <- "alignment"
-                  kk <- seqinr::kaks(aln)
-
-                  pick <- function(obj, keys) {
-                    for (key in keys) {
-                      if (is.list(obj) && !is.null(obj[[key]])) return(obj[[key]])
-                    }
-                    NULL
-                  }
-
-                  ka <- pick(kk, c("ka", "Ka", "KA"))
-                  ks <- pick(kk, c("ks", "Ks", "KS"))
-                  if (is.null(ka) && is.list(kk) && length(kk) >= 2) {
-                    ka <- kk[[1]]
-                    ks <- kk[[2]]
-                  }
-                  if (is.null(ka) || is.null(ks)) stop("unexpected kaks return shape")
-
-                  ka <- as.matrix(ka)
-                  ks <- as.matrix(ks)
-                  if (is.null(rownames(ka))) rownames(ka) <- as.character(nam)
-                  if (is.null(colnames(ka))) colnames(ka) <- as.character(nam)
-                  if (is.null(rownames(ks))) rownames(ks) <- as.character(nam)
-                  if (is.null(colnames(ks))) colnames(ks) <- as.character(nam)
-                  if (!(ref %in% rownames(ka)) || !(ref %in% rownames(ks))) stop("reference missing")
-
-                  out <- c()
-                  for (sp in as.character(nam)) {
-                    if (sp == ref) next
-                    if (!(sp %in% colnames(ka)) || !(sp %in% colnames(ks))) next
-                    dn <- suppressWarnings(as.numeric(ka[ref, sp]))
-                    ds <- suppressWarnings(as.numeric(ks[ref, sp]))
-                    if (is.finite(dn) && is.finite(ds) && ds > 0) {
-                      out[sp] <- dn / ds
-                    }
-                  }
-                  out
-                }
-            """)
-            raw = r_fn(StrVector(names), StrVector(values), reference)
-    except Exception:
-        return None
-
-    try:
-        r_names = list(raw.names) if raw.names is not None else []
-        result: dict[str, float] = {}
-        for sp, val in zip(r_names, list(raw)):
-            v = float(val)
-            if math.isfinite(v) and v >= 0:
-                result[sp.lower()] = round(v, 6)
-    except Exception:
-        return None
-
+    result = _run_kaks_rscript(rscript, seqs, reference)
     if not result:
         return None
     if use_cache:

@@ -8,4 +8,4 @@ python-dotenv>=1.0.0
 numpy>=1.26.0
 scipy>=1.11.0
 openpyxl>=3.1.0
-rpy2>=3.5.0
+# dN/dS uses R via an Rscript subprocess (see tools/r_bridge.py); no rpy2 needed.

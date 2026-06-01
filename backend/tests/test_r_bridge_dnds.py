@@ -1,7 +1,3 @@
-import builtins
-import sys
-import types
-
 from nullifier.agents.analyst import _attach_rdnds_to_orthologs
 from nullifier.tools import r_bridge
 
@@ -13,16 +9,8 @@ def test_pairwise_dnds_rejects_unusable_alignments():
     assert r_bridge.pairwise_dnds({"Homo_sapiens": "ATGATG"}, use_cache=False) is None
 
 
-def test_pairwise_dnds_gracefully_handles_missing_rpy2(monkeypatch):
-    original_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name.startswith("rpy2"):
-            raise ImportError("no rpy2")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(r_bridge, "_configure_r_home", lambda: True)
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+def test_pairwise_dnds_returns_none_when_rscript_missing(monkeypatch):
+    monkeypatch.setattr(r_bridge, "_find_rscript", lambda _home: None)
 
     result = r_bridge.pairwise_dnds(
         {"Homo_sapiens": "ATG" * 4, "Pan_troglodytes": "ATG" * 4},
@@ -32,34 +20,42 @@ def test_pairwise_dnds_gracefully_handles_missing_rpy2(monkeypatch):
     assert result is None
 
 
-def test_pairwise_dnds_lowercases_fake_r_output(monkeypatch):
-    class FakeVector(list):
-        names = ["Pan_troglodytes"]
+def test_pairwise_dnds_parses_and_lowercases_rscript_output(monkeypatch):
+    class FakeProc:
+        returncode = 0
+        stdout = "Pan_troglodytes\t0.250000\nMus_musculus\t0.500000\n"
+        stderr = ""
 
-    def fake_r(_code):
-        def _fn(_names, _seqs, _ref):
-            return FakeVector([0.25])
-        return _fn
+    monkeypatch.setattr(r_bridge, "_find_rscript", lambda _home: "Rscript")
+    monkeypatch.setattr(r_bridge.subprocess, "run", lambda *a, **k: FakeProc())
 
-    fake_rpy2 = types.ModuleType("rpy2")
-    fake_robjects = types.ModuleType("rpy2.robjects")
-    fake_packages = types.ModuleType("rpy2.robjects.packages")
-    fake_robjects.r = fake_r
-    fake_robjects.StrVector = lambda values: list(values)
-    fake_packages.importr = lambda _name: object()
-    fake_rpy2.robjects = fake_robjects
+    result = r_bridge.pairwise_dnds(
+        {
+            "Homo_sapiens": "ATG" * 4,
+            "Pan_troglodytes": "ATG" * 4,
+            "Mus_musculus": "ATG" * 4,
+        },
+        use_cache=False,
+    )
 
-    monkeypatch.setattr(r_bridge, "_configure_r_home", lambda: True)
-    monkeypatch.setitem(sys.modules, "rpy2", fake_rpy2)
-    monkeypatch.setitem(sys.modules, "rpy2.robjects", fake_robjects)
-    monkeypatch.setitem(sys.modules, "rpy2.robjects.packages", fake_packages)
+    assert result == {"pan_troglodytes": 0.25, "mus_musculus": 0.5}
+
+
+def test_pairwise_dnds_logs_and_returns_none_on_rscript_failure(monkeypatch):
+    class FakeProc:
+        returncode = 1
+        stdout = ""
+        stderr = "Error: there is no package called 'seqinr'\n"
+
+    monkeypatch.setattr(r_bridge, "_find_rscript", lambda _home: "Rscript")
+    monkeypatch.setattr(r_bridge.subprocess, "run", lambda *a, **k: FakeProc())
 
     result = r_bridge.pairwise_dnds(
         {"Homo_sapiens": "ATG" * 4, "Pan_troglodytes": "ATG" * 4},
         use_cache=False,
     )
 
-    assert result == {"pan_troglodytes": 0.25}
+    assert result is None
 
 
 def test_attach_rdnds_to_orthologs_lowercase_species_join():
