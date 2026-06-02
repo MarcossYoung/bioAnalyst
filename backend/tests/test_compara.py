@@ -189,6 +189,42 @@ def test_fetch_cds_sequence_returns_none_on_error(tmp_path, monkeypatch):
 
 # ── fetch_compara_metadata ───────────────────────────────────────────────────
 
+def test_fetch_gene_tree_aligned_uses_species_qualified_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    body = {
+        "newick": "(Homo_sapiens,Pan_troglodytes);",
+        "tree": {
+            "children": [
+                {
+                    "taxonomy": {"scientific_name": "Homo sapiens"},
+                    "sequence": {"mol_seq": {"seq": "ATG---AAA"}},
+                },
+                {
+                    "taxonomy": {"scientific_name": "Pan troglodytes"},
+                    "sequence": {"mol_seq": {"seq": "ATGCCC---"}},
+                },
+            ]
+        },
+    }
+    with patch("nullifier.tools.ensembl.requests.get", return_value=_mock_resp(body)) as mock_get:
+        result = e.fetch_gene_tree_aligned("ENSG00000000005")
+
+    assert mock_get.call_args.args[0] == "https://rest.ensembl.org/genetree/member/id/human/ENSG00000000005"
+    assert mock_get.call_args.kwargs["params"]["sequence"] == "cdna"
+    assert result == {
+        "newick": "(Homo_sapiens,Pan_troglodytes);",
+        "sequences": {
+            "Homo_sapiens": "ATG---AAA",
+            "Pan_troglodytes": "ATGCCC---",
+        },
+    }
+
+
 def test_fetch_compara_metadata_in_compara(tmp_path, monkeypatch):
     monkeypatch.setattr(e, "_cfg", {
         "base_url": "https://rest.ensembl.org",

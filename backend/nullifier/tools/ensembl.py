@@ -522,14 +522,14 @@ def fetch_cds_sequence(ensg_id: str, use_cache: bool = True) -> str | None:
 
 
 def fetch_gene_tree_aligned(ensembl_id: str, use_cache: bool = True) -> dict | None:
-    """GET /genetree/member/id/{ensembl_id} — Compara aligned CDS + Newick tree for PAML.
+    """GET /genetree/member/id/human/{ensembl_id} — Compara aligned cDNA + Newick tree for PAML.
 
-    Returns {sequences: {species: cds_seq}, newick: str}, or None when the gene
+    Returns {sequences: {species: aligned_cdna}, newick: str}, or None when the gene
     has no Compara family or the alignment is empty.
     Prunes to Mammalia (taxon 40674).
     """
     data = _request(
-        f"/genetree/member/id/{ensembl_id}",
+        f"/genetree/member/id/human/{ensembl_id}",
         {"sequence": "cdna", "aligned": 1, "nh_format": "simple",
          "compara": "multi", "prune_taxon": 40674},
         use_cache=use_cache,
