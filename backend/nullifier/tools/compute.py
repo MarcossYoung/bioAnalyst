@@ -608,17 +608,17 @@ def _paml_branch_model(inputs: dict, data: dict) -> dict:
 # ── test library / plan dispatch ────────────────────────────────────────────
 # name -> (callable, list-of-input-keys, group-or-pair-test?)
 TEST_LIBRARY: dict[str, dict] = {
-    "kruskal_wallis":      {"fn": kruskal_wallis,      "kind": "groups"},
-    "mann_whitney_posthoc": {"fn": mann_whitney_posthoc, "kind": "groups"},
-    "spearman":            {"fn": spearman,            "kind": "xy"},
-    "pearson":             {"fn": pearson,             "kind": "xy"},
-    "fisher_exact":        {"fn": fisher_exact,        "kind": "table"},
-    "chi_square":          {"fn": chi_square,          "kind": "table"},
-    "bootstrap_ci":        {"fn": bootstrap_ci,        "kind": "values"},
-    "permutation_test":    {"fn": permutation_test,    "kind": "ab"},
-    "cliffs_delta":        {"fn": cliffs_delta,        "kind": "ab"},
-    "cohens_d":            {"fn": cohens_d,            "kind": "ab"},
-    "paml_branch_model":   {"fn": _paml_branch_model,  "kind": "paml"},
+    "kruskal_wallis":      {"fn": kruskal_wallis,      "kind": "groups", "constructs": {"set_difference"}},
+    "mann_whitney_posthoc": {"fn": mann_whitney_posthoc, "kind": "groups", "constructs": {"set_difference"}},
+    "spearman":            {"fn": spearman,            "kind": "xy", "constructs": {"set_difference"}},
+    "pearson":             {"fn": pearson,             "kind": "xy", "constructs": {"set_difference"}},
+    "fisher_exact":        {"fn": fisher_exact,        "kind": "table", "constructs": {"set_difference"}},
+    "chi_square":          {"fn": chi_square,          "kind": "table", "constructs": {"set_difference"}},
+    "bootstrap_ci":        {"fn": bootstrap_ci,        "kind": "values", "constructs": {"set_difference"}},
+    "permutation_test":    {"fn": permutation_test,    "kind": "ab", "constructs": {"set_difference"}},
+    "cliffs_delta":        {"fn": cliffs_delta,        "kind": "ab", "constructs": {"set_difference"}},
+    "cohens_d":            {"fn": cohens_d,            "kind": "ab", "constructs": {"set_difference"}},
+    "paml_branch_model":   {"fn": _paml_branch_model,  "kind": "paml", "constructs": {"lineage_specific_selection"}},
 }
 
 TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the supplied data dict):
@@ -762,6 +762,26 @@ def run_analysis_plan(plan: dict, data: dict) -> dict:
             "primary_tests": [...]}  (primary_tests echoed back, used by leave_one_out)
     """
     plan = plan or {}
+    if plan.get("untestable"):
+        reason = plan.get("untestable_reason") or "No compatible compute method for claim construct"
+        result = _test_result(
+            "untestable",
+            requested=plan.get("required_construct") or "untestable",
+            available=False,
+            skipped=True,
+            skip_reason=reason,
+            method="construct-validity gate",
+            details={"required_construct": plan.get("required_construct")},
+        )
+        return {
+            "tests": [result],
+            "corrections_applied": [],
+            "data_summary": _data_summary(data),
+            "correction_requested": plan.get("correction"),
+            "untestable": True,
+            "untestable_reason": reason,
+            "required_construct": plan.get("required_construct"),
+        }
     requested = plan.get("tests_requested") or []
     results: list[dict] = []
     for entry in requested:

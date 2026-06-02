@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 
+ALLOWED_CLAIM_CONSTRUCTS = {"set_difference", "cross_lineage_rate_correlation", "phenotype_association"}
+
+
 def _bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {item}" for item in items) if items else "- (none)"
 
@@ -63,6 +66,9 @@ def normalize_atomic_claim(claim: Any, index: int | None = None) -> dict[str, An
             entities = []
         context = claim.get("context", "")
         mechanism = claim.get("mechanism", "")
+        construct = str(claim.get("construct") or "").strip()
+        if construct not in ALLOWED_CLAIM_CONSTRUCTS:
+            construct = "set_difference"
         return {
             **claim,
             "id": str(claim.get("id") or claim_id),
@@ -71,6 +77,7 @@ def normalize_atomic_claim(claim: Any, index: int | None = None) -> dict[str, An
             "entities": [str(e).strip() for e in entities if str(e).strip()],
             "context": str(context).strip(),
             "mechanism": str(mechanism).strip(),
+            "construct": construct,
         }
 
     statement = str(claim).strip()
@@ -81,6 +88,7 @@ def normalize_atomic_claim(claim: Any, index: int | None = None) -> dict[str, An
         "entities": [],
         "context": "",
         "mechanism": "",
+        "construct": "set_difference",
     }
 
 

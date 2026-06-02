@@ -12,6 +12,7 @@ const STAGE_KEY: Record<string, string> = {
   claims_formalized: 'formalizer',
   queries_expanded: 'librarian', papers_retrieved: 'librarian',
   paper_classified: 'librarian', synthesis_ready: 'librarian',
+  classifier_degraded: 'librarian',
   analyst_started: 'analyst', analyst_gene_fetched: 'analyst',
   analyst_symbol_resolved: 'analyst', analyst_phylo_loaded: 'analyst',
   analyst_gnomad_fetched: 'analyst', analyst_paml_complete: 'analyst',
@@ -77,6 +78,7 @@ function eventLabel(ev: WsEvent): string {
     case 'papers_retrieved':      return `[${p.claim_id}] ${p.paper_count} papers`
     case 'paper_classified':      return `  ${p.classification} — ${String(p.paper_title ?? '').slice(0, 48)}`
     case 'synthesis_ready':       return `[${p.claim_id}] ${p.evidence_strength}`
+    case 'classifier_degraded':   return `[${p.claim_id}] classifier degraded (${p.dropped}/${p.retrieved} dropped)`
     case 'analyst_started':       return `analyst: ${p.gene_count} gene(s)`
     case 'analyst_gene_fetched':  return `  ${p.gene} — ${p.status}`
     case 'ensembl.batch_progress': return `Ensembl batch: ${p.fetched} / ${p.total}`
@@ -115,6 +117,7 @@ function rowColor(type: string): string {
   if (type === 'run_completed') return '#86efac'
   if (type === 'verdict_ready') return '#fcd34d'
   if (type.includes('analyst') || type.startsWith('paml.') || type.startsWith('rdnds.') || type === 'ensembl.batch_progress') return '#67e8f9'
+  if (type === 'classifier_degraded') return '#fca5a5'
   if (type === 'paper_classified' || type === 'analyst_gene_fetched' || type === 'compute_test_complete') return '#475569'
   if (type.startsWith('compute_') || type === 'gene_sets_expanded' || type === 'methodologist_plan_complete') return '#a5b4fc'
   if (type.startsWith('interpreter')) return '#67e8f9'

@@ -1,4 +1,5 @@
 import threading
+import re
 from concurrent.futures import ThreadPoolExecutor, wait as _cf_wait
 
 import requests
@@ -10,6 +11,12 @@ SOURCES = {
     "openalex": openalex.search,
     "europe_pmc": europe_pmc.search,
     "biorxiv": biorxiv.search,
+}
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "into",
+    "is", "it", "of", "on", "or", "the", "to", "with", "without",
 }
 
 # Source -> backing host. europe_pmc and biorxiv share www.ebi.ac.uk, so one
@@ -176,6 +183,25 @@ def _paper_score(p: dict) -> float:
 
 def _rank(papers: list[dict]) -> list[dict]:
     return sorted(papers, key=_paper_score, reverse=True)
+
+
+def _tokens(text: str) -> set[str]:
+    return {t for t in _TOKEN_RE.findall((text or "").lower()) if t not in _STOPWORDS and len(t) > 2}
+
+
+def citation_similarity(query: str, paper: dict | None) -> float:
+    """Cheap title/abstract similarity for validating user-cited references."""
+    if not paper:
+        return 0.0
+    query_tokens = _tokens(query or "")
+    if not query_tokens:
+        return 0.0
+    title_tokens = _tokens(paper.get("title") or "")
+    abstract_tokens = _tokens(paper.get("abstract") or "")
+    candidate = title_tokens | abstract_tokens
+    if not candidate:
+        return 0.0
+    return len(query_tokens & candidate) / len(query_tokens)
 
 
 def find_by_title(title_fragment: str, health: "SourceHealth | None" = None) -> dict | None:

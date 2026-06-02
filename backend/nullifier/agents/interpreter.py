@@ -56,6 +56,18 @@ def run_interpreter(
     robustness: dict | None = None,
     reproducibility: dict | None = None,
 ) -> dict:
+    if compute_results.get("untestable"):
+        reason = compute_results.get("untestable_reason") or "No compatible compute method for the claim construct."
+        return {
+            "patterns_observed": [],
+            "outlier_genes": [],
+            "regulatory_overlap": {},
+            "reproducibility_check": [],
+            "limitations": [reason],
+            "overall_genomic_assessment": "untestable",
+            "assessment_justification": reason,
+            "required_construct": compute_results.get("required_construct"),
+        }
     user = _build_user_prompt(formalized, expansion, compute_results, gene_data, robustness, reproducibility)
     return llm_call_json("interpreter", INTERPRETER_SYSTEM, user, max_tokens=3500)
 
@@ -74,7 +86,7 @@ def _build_user_prompt(
         if not t.get("available", True):
             test_lines.append(
                 f"  - {t.get('requested', '?')}: NOT AVAILABLE "
-                f"({t.get('closest_alternative', '')})"
+                f"({t.get('skip_reason') or t.get('error') or t.get('closest_alternative', '')})"
             )
             continue
         bits = [t.get("test", "?")]
@@ -153,6 +165,12 @@ def _build_user_prompt(
         "DETERMINISTIC COMPUTE RESULTS:\n" + ("\n".join(test_lines) or "  (none)"),
         "CORRECTIONS APPLIED:\n" + ("\n".join(corr_lines) or "  (none)"),
     ]
+    if compute_results.get("untestable"):
+        evidence_parts.append(
+            "CONSTRUCT GATE:\n"
+            f"  required_construct: {compute_results.get('required_construct')}\n"
+            f"  reason: {compute_results.get('untestable_reason')}"
+        )
     if rb_block.strip():
         evidence_parts.append(rb_block.strip())
     if repro_block.strip():

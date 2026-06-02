@@ -2,6 +2,15 @@ from ..tools.llm_client import llm_call_json
 from ..tools.compute import TEST_LIBRARY, TEST_LIBRARY_DOC
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
+SUPPORTED_CONSTRUCTS = {
+    construct
+    for spec in TEST_LIBRARY.values()
+    for construct in (spec.get("constructs") or set())
+}
+DEFERRED_CONSTRUCTS = {
+    "cross_lineage_rate_correlation": "Requires mirrortree_lite / phylogenetic independent-contrast style branch-rate correlation (planned in W3).",
+    "phenotype_association": "Requires PGLS or an equivalent phylogenetic phenotype-association model.",
+}
 
 METHODOLOGIST_SPEC = AgentSpec(
     name="methodologist",
@@ -42,6 +51,24 @@ def run_methodologist(
     data_summary: dict,
     completed_analysis: list | None = None,
 ) -> dict:
+    claim_constructs = _claim_constructs(formalized)
+    unsupported = sorted(c for c in claim_constructs if c not in SUPPORTED_CONSTRUCTS)
+    if unsupported:
+        required = unsupported[0]
+        return {
+            "tests_requested": [],
+            "primary_tests": [],
+            "correction": "none",
+            "untestable": True,
+            "required_construct": required,
+            "untestable_reason": DEFERRED_CONSTRUCTS.get(
+                required,
+                f"No compute test is registered for construct '{required}'.",
+            ),
+            "claim_constructs": sorted(claim_constructs),
+            "rationale": "Construct-validity gate prevented mismatched statistical tests.",
+        }
+
     user = _build_user_prompt(formalized, expansion, data_summary, completed_analysis or [])
     plan = llm_call_json("methodologist", METHODOLOGIST_SYSTEM, user, max_tokens=2500)
 
@@ -50,11 +77,30 @@ def run_methodologist(
     plan.setdefault("tests_requested", [])
     plan.setdefault("primary_tests", [])
     plan.setdefault("correction", "benjamini_hochberg")
+    allowed_tests = {
+        name for name, spec in TEST_LIBRARY.items()
+        if (spec.get("constructs") or set()) & claim_constructs
+    }
+    plan["tests_requested"] = [
+        t for t in (plan.get("tests_requested") or [])
+        if isinstance(t, dict) and t.get("test") in allowed_tests
+    ]
     plan["primary_tests"] = [
         t for t in (plan.get("primary_tests") or [])
-        if isinstance(t, dict) and t.get("test") in TEST_LIBRARY
+        if isinstance(t, dict) and t.get("test") in allowed_tests
     ]
+    plan["claim_constructs"] = sorted(claim_constructs)
     return plan
+
+
+def _claim_constructs(formalized: dict) -> set[str]:
+    claims = formalized.get("atomic_claims") or []
+    constructs = {
+        str((claim or {}).get("construct") or "set_difference")
+        for claim in claims
+        if isinstance(claim, dict)
+    }
+    return constructs or {"set_difference"}
 
 
 def _build_user_prompt(
@@ -76,6 +122,7 @@ def _build_user_prompt(
         "expanded_sets": list((expansion.get("expanded") or {}).keys()),
         "control_sets": list((expansion.get("controls") or {}).keys()),
         "available_tests": TEST_LIBRARY_DOC,
+        "claim_constructs": sorted(_claim_constructs(formalized)),
         "data_shape": (
             "groups: {<group>: {<metric>: [values]}} "
             "— names: starter, expanded.<set>, controls.<set>; "

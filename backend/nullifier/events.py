@@ -147,6 +147,16 @@ def synthesis_ready(claim_id: str, evidence_strength: str, novelty_flag: str) ->
     })
 
 
+def classifier_degraded(claim_id: str, summary: dict) -> Event:
+    return Event("classifier_degraded", {
+        "claim_id": claim_id,
+        "retrieved": summary.get("retrieved", 0),
+        "classified": summary.get("classified", 0),
+        "dropped": summary.get("dropped", 0),
+        "drop_reasons": summary.get("drop_reasons", {}),
+    })
+
+
 def analyst_started(gene_count: int) -> Event:
     return Event("analyst_started", {"gene_count": gene_count})
 

@@ -43,6 +43,21 @@ export interface PaperClassification {
   reasoning: string
 }
 
+export interface FailedClassification {
+  paper_id: string
+  paper_title: string
+  error: string
+  drop_reason?: string
+}
+
+export interface ClassificationSummary {
+  retrieved: number
+  classified: number
+  dropped: number
+  drop_reasons: Record<string, number>
+  classifier_degraded: boolean
+}
+
 export interface ClaimEvidence {
   claim_id: string
   evidence_strength: string  // strong | moderate | weak | absent
@@ -51,6 +66,9 @@ export interface ClaimEvidence {
   literature_gap?: string
   confounders_identified?: string | { confounder?: string }[]
   classifications: PaperClassification[]
+  failed_classifications?: FailedClassification[]
+  classification_summary?: ClassificationSummary
+  classifier_degraded?: boolean
   retrieved_papers: NormalizedPaper[]
   queries_used?: { query: string; intent?: string }[]
 }
@@ -58,6 +76,8 @@ export interface ClaimEvidence {
 export interface Evidence {
   cited_literature_validated: unknown[]
   claim_evidence: Record<string, ClaimEvidence>
+  classifier_degraded?: boolean
+  classification_summaries?: Record<string, ClassificationSummary>
   api_status: Record<string, string[]>
   flags_applied: number
 }
@@ -135,6 +155,8 @@ export interface AnalystSetStats {
   dnds_mean: number | null
   dnds_stdev: number | null
   dnds_max: number | null
+  dnds_saturation_fraction?: number
+  dnds_saturation_flag?: boolean
   omega_foreground_n?: number
   omega_foreground_mean?: number | null
   acceleration_ratio_n?: number
@@ -212,6 +234,12 @@ export interface AnalystResult {
   // v7 fields
   phylo_data?: Record<string, PhyloEntry | null>
   data_provenance?: DataProvenance | null
+  dnds_saturation?: {
+    flag: boolean
+    max_fraction: number
+    threshold: number
+    reason: string
+  } | null
 }
 
 // ── v6: gene-set expansion ───────────────────────────────────────────────────
@@ -293,6 +321,9 @@ export interface ComputeTest {
 export interface ComputeResult {
   tests: ComputeTest[]
   corrections_applied: Array<string | Record<string, unknown>>
+  untestable?: boolean
+  untestable_reason?: string
+  required_construct?: string
 }
 
 // ── v6: robustness ───────────────────────────────────────────────────────────

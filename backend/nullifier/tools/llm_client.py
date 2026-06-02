@@ -189,7 +189,10 @@ def _call_local_json(system: str, user: str, max_tokens: int) -> dict:
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
                     ],
-                    response_format={"type": "json_object"},
+                    # LM Studio's OpenAI-compatible endpoint rejects the older
+                    # json_object response format; ask for text and parse the
+                    # JSON contract enforced by the prompt.
+                    response_format={"type": "text"},
                 )
                 if hasattr(resp, "usage") and resp.usage:
                     TRACKER.add_local(resp.usage.prompt_tokens, resp.usage.completion_tokens)

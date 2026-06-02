@@ -79,6 +79,13 @@ function confoundersText(value: ClaimEvidence['confounders_identified']): string
   return String(value)
 }
 
+function dropReasonsText(claim: ClaimEvidence): string {
+  const reasons = claim.classification_summary?.drop_reasons ?? {}
+  return Object.entries(reasons)
+    .map(([reason, count]) => `${reason}: ${count}`)
+    .join(', ')
+}
+
 function FlagPopover({ paper, ctx, onDone }: { paper: DisplayPaper; ctx: FlagContext; onDone: () => void }) {
   const [correct, setCorrect] = useState<string>(CLASSIFICATION_OPTIONS.find((o) => o !== paper.classification) ?? 'tangential')
   const [reason, setReason] = useState('')
@@ -222,6 +229,9 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
         const stmt = claimText?.[claim.claim_id]
         const novelty = claim.novelty_flag && claim.novelty_flag !== 'normal' ? claim.novelty_flag : null
         const confounders = confoundersText(claim.confounders_identified)
+        const summary = claim.classification_summary
+        const degraded = claim.classifier_degraded || summary?.classifier_degraded
+        const dropReasons = dropReasonsText(claim)
         return (
           <div key={claim.claim_id}>
             {/* Claim header */}
@@ -257,6 +267,11 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
                   {papers.length} paper(s) classified
                 </span>
               )}
+              {summary && (
+                <span style={{ fontSize: '11px', color: degraded ? '#7f1d1d' : 'var(--text-xs)', fontFamily: 'ui-monospace, Consolas, monospace' }}>
+                  {summary.retrieved} retrieved / {summary.classified} classified / {summary.dropped} dropped
+                </span>
+              )}
             </div>
 
             {stmt && (
@@ -271,6 +286,20 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
               <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'var(--text-muted)' }}>
                 <span style={{ fontWeight: 600 }}>Gap: </span>{claim.literature_gap}
               </p>
+            )}
+
+            {degraded && (
+              <div style={{
+                margin: '0 0 10px',
+                padding: '8px 10px',
+                border: '1px solid #fecaca',
+                borderRadius: '4px',
+                background: '#fef2f2',
+                color: '#7f1d1d',
+                fontSize: '12px',
+              }}>
+                Classifier degraded: retrieved papers were dropped before classification{dropReasons ? ` (${dropReasons})` : ''}.
+              </div>
             )}
 
             {confounders && (
@@ -294,7 +323,7 @@ export function EvidencePanel({ evidence, claimText, flagContext }: EvidencePane
             )}
             {papers.length === 0 && (claim.retrieved_papers?.length ?? 0) > 0 && (
               <p style={{ fontSize: '11px', color: 'var(--text-xs)', fontFamily: 'ui-monospace, Consolas, monospace' }}>
-                {claim.retrieved_papers.length} paper(s) retrieved, none classified
+                {claim.retrieved_papers.length} paper(s) retrieved, none classified{dropReasons ? ` (${dropReasons})` : ''}
               </p>
             )}
           </div>

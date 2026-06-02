@@ -60,6 +60,8 @@ Scores are from 1 (falsified) to 10 (strongly supported):
 - overall_falsifiability_score
 
 Use NOVEL-UNTESTED when novelty_flag is unstudied across claims.
+If classifier_degraded is true, do not treat empty classifications as a confirmed literature void.
+If genomic evidence is marked untestable, score genomic_evidence_alignment as 5 (neutral), not as support or contradiction.
 Propose the single most decisive experiment or analysis."""
 
 SKEPTIC_DNDS_LIMITATION = (
@@ -117,6 +119,8 @@ def stress_test(formalized: dict, evidence: dict, analyst_result: dict | None = 
             f"  H0: {claim['null_hypothesis']}\n"
             f"  Librarian: strength={assessment.get('evidence_strength', '?')}, "
             f"novelty={assessment.get('novelty_flag', '?')}\n"
+            f"  Classifier degraded: {assessment.get('classifier_degraded', False)} "
+            f"summary={assessment.get('classification_summary', {})}\n"
             f"  Confounders: {assessment.get('confounders_identified', '')}\n"
             f"  Top retrieved abstracts for your sanity-check:\n" + "\n".join(top_abstracts)
         )
@@ -156,13 +160,48 @@ CORE HYPOTHESIS:
 
 DOMAIN: {formalized.get('domain', 'unknown')}
 
+CLASSIFIER DEGRADED: {bool(evidence.get('classifier_degraded'))}
+
 USER-CITED LITERATURE:
 {chr(10).join(f"- {r['title_or_description']}" for r in cited_refs)}
 
 CLAIMS + EVIDENCE + TOP ABSTRACTS:
 {chr(10).join(claims_and_evidence)}
 {analyst_section}{critique_section}"""
-    return llm_call_json("skeptic", system, user_msg, max_tokens=3500)
+    verdict = llm_call_json("skeptic", system, user_msg, max_tokens=3500)
+    return _apply_guardrails(verdict, evidence, analyst_result)
+
+
+def _apply_guardrails(verdict: dict, evidence: dict, analyst_result: dict | None) -> dict:
+    if not isinstance(verdict, dict):
+        return verdict
+    out = dict(verdict)
+    scores = dict(out.get("scores") or {})
+    analyst_compute = (analyst_result or {}).get("compute_results") or {}
+    analyst_interp = (analyst_result or {}).get("interpretation") or {}
+    genomic_untestable = (
+        analyst_compute.get("untestable")
+        or analyst_interp.get("overall_genomic_assessment") == "untestable"
+        or ((analyst_result or {}).get("dnds_saturation") or {}).get("flag")
+    )
+    if genomic_untestable:
+        scores["genomic_evidence_alignment"] = 5
+        out["scores"] = scores
+        note = "Genomic axis marked untestable by construct-validity gate; scored neutral."
+        out["verdict_justification"] = _append_note(out.get("verdict_justification", ""), note)
+    if evidence.get("classifier_degraded"):
+        out["librarian_sanity_check"] = _append_note(
+            out.get("librarian_sanity_check", ""),
+            "Classifier degraded: empty classifications are a tool failure signal, not confirmed literature absence.",
+        )
+    return out
+
+
+def _append_note(text: str, note: str) -> str:
+    text = str(text or "").strip()
+    if note in text:
+        return text
+    return f"{text} {note}".strip()
 
 
 def _format_completed_analysis(methods_used: list[str], completed: list[dict], analyst_result: dict | None) -> str:
@@ -200,6 +239,20 @@ def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
         return "\nGENOMIC EVIDENCE: Not available - score genomic_evidence_alignment as 5 (neutral)."
 
     interp = analyst_result.get("interpretation", {})
+    if (
+        interp.get("overall_genomic_assessment") == "untestable"
+        or (analyst_result.get("compute_results") or {}).get("untestable")
+        or (analyst_result.get("dnds_saturation") or {}).get("flag")
+    ):
+        reason = interp.get("assessment_justification") or (analyst_result.get("compute_results") or {}).get("untestable_reason", "")
+        if not reason:
+            reason = (analyst_result.get("dnds_saturation") or {}).get("reason", "")
+        return (
+            "\nGENOMIC EVIDENCE: Untestable/low-confidence by guardrail - "
+            "score genomic_evidence_alignment as 5 (neutral).\n"
+            f"  Required construct: {interp.get('required_construct') or (analyst_result.get('compute_results') or {}).get('required_construct')}\n"
+            f"  Reason: {reason}"
+        )
     set_a_stats = analyst_result.get("set_a_stats") or {}
     set_b_stats = analyst_result.get("set_b_stats") or {}
     cross_set = analyst_result.get("cross_set") or {}

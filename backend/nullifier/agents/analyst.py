@@ -267,6 +267,7 @@ def run_analyst(
         "set_b": set_b,
         "set_a_stats": set_a_stats,
         "set_b_stats": set_b_stats,
+        "dnds_saturation": _combine_saturation_flags(set_a_stats, set_b_stats),
         "cross_set": cross_set,
         "reproducibility": reproducibility,
     }
@@ -471,6 +472,10 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
             if paml_result.get("acceleration_ratio") is not None:
                 acceleration_ratios.append(paml_result["acceleration_ratio"])
 
+    dnds_saturation_fraction = (
+        sum(1 for v in dnds_values if abs(float(v) - 1.0) < 0.01) / len(dnds_values)
+        if dnds_values else 0.0
+    )
     return {
         "valid_gene_count": len(valid),
         "missing_genes": [g for g in genes if g not in valid],
@@ -481,6 +486,8 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
         "dnds_mean": mean(dnds_values) if dnds_values else None,
         "dnds_stdev": stdev(dnds_values) if len(dnds_values) > 1 else None,
         "dnds_max": max(dnds_values) if dnds_values else None,
+        "dnds_saturation_fraction": dnds_saturation_fraction,
+        "dnds_saturation_flag": bool(dnds_values and dnds_saturation_fraction > 0.5),
         "dnds_diagnostics": dnds_diag,
         "omega_foreground_n": len(omega_values),
         "omega_foreground_mean": mean(omega_values) if omega_values else None,
@@ -492,6 +499,23 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
              if isinstance(v, dict) and v.get("status") == "computed"),
             None,
         ),
+    }
+
+
+def _combine_saturation_flags(*stats: dict | None) -> dict:
+    saturated = [s for s in stats if s and s.get("dnds_saturation_flag")]
+    fractions = [
+        float(s.get("dnds_saturation_fraction", 0.0))
+        for s in stats
+        if s and s.get("dnds_n", 0)
+    ]
+    max_fraction = max(fractions) if fractions else 0.0
+    return {
+        "flag": bool(saturated),
+        "max_fraction": max_fraction,
+        "threshold": 0.5,
+        "reason": "Most usable dN/dS values are pinned near 1.0; treat genomic axis as low-confidence/untestable."
+        if saturated else "",
     }
 
 

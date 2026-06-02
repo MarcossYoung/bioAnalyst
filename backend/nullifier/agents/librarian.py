@@ -2,7 +2,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..tools.llm_client import llm_call_json, llm_call_json_batch
-from ..tools.literature import federated_search, find_by_title, SourceHealth
+from ..tools.literature import federated_search, find_by_title, citation_similarity, SourceHealth
 from ..tools.query_expander import expand_queries
 from ..tools.flag_store import get_relevant_flags, format_flags_for_prompt
 from .. import events as ev
@@ -17,6 +17,8 @@ from .semantic import (
 
 
 _PER_CLAIM_SEARCH_BUDGET = 45.0
+_CLASSIFIER_DEGRADED_THRESHOLD = 0.5
+_CITATION_MATCH_THRESHOLD = 0.35
 
 
 LIBRARIAN_PAPER_SPEC = AgentSpec(
@@ -100,7 +102,23 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
                     hit = fut.result()
                 except Exception:
                     hit = None
-                cited_validated.append({"user_reference": ref, "database_match": hit})
+                query_text = ref.get("title_or_description", "")
+                similarity = citation_similarity(query_text, hit)
+                if hit and similarity >= _CITATION_MATCH_THRESHOLD:
+                    cited_validated.append({
+                        "user_reference": ref,
+                        "database_match": hit,
+                        "status": "validated",
+                        "similarity": round(similarity, 4),
+                    })
+                else:
+                    cited_validated.append({
+                        "user_reference": ref,
+                        "database_match": None,
+                        "candidate_match": hit,
+                        "status": "unverified",
+                        "similarity": round(similarity, 4),
+                    })
 
     claim_evidence = {}
     api_status_acc = {}
@@ -157,10 +175,12 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
         for idx, paper in enumerate(all_papers):
             cls = classifications_raw[idx] if idx < len(classifications_raw) else {"_error": "missing batch result"}
             if not isinstance(cls, dict) or "_error" in cls:
+                error = (cls.get("_error") if isinstance(cls, dict) else "invalid classifier output") or "classifier failed"
                 failed_classifications.append({
                     "paper_id": f"{paper['source']}:{paper['id']}",
                     "paper_title": paper["title"],
-                    "error": (cls.get("_error") if isinstance(cls, dict) else "invalid classifier output") or "classifier failed",
+                    "error": error,
+                    "drop_reason": _classification_drop_reason(error),
                 })
                 continue
             entry = {
@@ -206,19 +226,70 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
                 )
             )
 
+        classification_summary = _classification_summary(all_papers, classifications, failed_classifications)
+        if on_event and classification_summary["classifier_degraded"]:
+            on_event(ev.classifier_degraded(claim["id"], classification_summary))
         claim_evidence[claim["id"]] = {
             **synthesis,
             "classifications": classifications,
             "failed_classifications": failed_classifications,
+            "classification_summary": classification_summary,
+            "classifier_degraded": classification_summary["classifier_degraded"],
             "retrieved_papers": all_papers,
             "queries_used": expanded,
         }
 
+    classifier_degraded = any(
+        claim.get("classifier_degraded")
+        for claim in claim_evidence.values()
+    )
     return {
         "cited_literature_validated": cited_validated,
         "claim_evidence": claim_evidence,
+        "classifier_degraded": classifier_degraded,
+        "classification_summaries": {
+            cid: claim.get("classification_summary", {})
+            for cid, claim in claim_evidence.items()
+        },
         "api_status": api_status_acc,
         "flags_applied": len(relevant_flags),
+    }
+
+
+def _classification_drop_reason(error: str) -> str:
+    text = (error or "").lower()
+    if "response_format" in text or "json_schema" in text or "json_object" in text or "error code: 400" in text:
+        return "api_schema_error"
+    if "connection" in text or "unreachable" in text or "refused" in text or "timeout" in text:
+        return "model_unreachable"
+    if "json" in text or "decode" in text or "parse" in text:
+        return "parse_error"
+    if "empty" in text or "no content" in text:
+        return "empty_response"
+    if "quote" in text:
+        return "quote_mismatch"
+    return "other"
+
+
+def _classification_summary(
+    papers: list[dict],
+    classifications: list[dict],
+    failed_classifications: list[dict],
+) -> dict:
+    reasons: dict[str, int] = {}
+    for failure in failed_classifications:
+        reason = failure.get("drop_reason") or _classification_drop_reason(failure.get("error", ""))
+        reasons[reason] = reasons.get(reason, 0) + 1
+    retrieved = len(papers)
+    classified = len(classifications)
+    dropped = len(failed_classifications)
+    degraded = bool(retrieved and dropped / retrieved > _CLASSIFIER_DEGRADED_THRESHOLD)
+    return {
+        "retrieved": retrieved,
+        "classified": classified,
+        "dropped": dropped,
+        "drop_reasons": reasons,
+        "classifier_degraded": degraded,
     }
 
 

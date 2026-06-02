@@ -222,6 +222,23 @@ def test_run_analysis_plan_preserves_unavailable_paml_result():
     }
 
 
+def test_run_analysis_plan_returns_typed_untestable_result():
+    plan = {
+        "untestable": True,
+        "required_construct": "cross_lineage_rate_correlation",
+        "untestable_reason": "requires mirrortree_lite",
+    }
+
+    out = c.run_analysis_plan(plan, {"groups": {}, "variables": {}, "gene_index": [], "tables": {}})
+    result = out["tests"][0]
+
+    assert out["untestable"] is True
+    assert result["available"] is False
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "requires mirrortree_lite"
+    assert_full_test_result(result)
+
+
 def test_leave_one_out_skips_when_primary_tests_have_no_result():
     def rebuild(_excluded: set) -> dict:
         return {"groups": {}, "variables": {"x": [1, 2], "y": [2, 3]}, "gene_index": [], "tables": {}}

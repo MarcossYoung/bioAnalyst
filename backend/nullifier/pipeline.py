@@ -158,6 +158,16 @@ def run_pipeline(
                     robustness=compute_result["robustness"],
                     reproducibility=analyst_data["reproducibility"],
                 )
+                dnds_saturation = analyst_data.get("dnds_saturation") or {}
+                if dnds_saturation.get("flag"):
+                    reason = dnds_saturation.get("reason")
+                    interpretation = {
+                        **interpretation,
+                        "overall_genomic_assessment": "untestable",
+                        "assessment_justification": reason,
+                        "limitations": list(interpretation.get("limitations") or []) + [reason],
+                        "dnds_saturation": dnds_saturation,
+                    }
                 assessment = interpretation.get("overall_genomic_assessment", "inconclusive")
                 yield ev.interpreter_complete(assessment)
                 yield ev.analyst_ready(assessment)
@@ -175,6 +185,7 @@ def run_pipeline(
                     "set_b": analyst_data["set_b"],
                     "set_a_stats": analyst_data["set_a_stats"],
                     "set_b_stats": analyst_data["set_b_stats"],
+                    "dnds_saturation": analyst_data.get("dnds_saturation"),
                     "cross_set": analyst_data["cross_set"],
                     "phylo_data": analyst_data["phylo_data"],
                     "data_provenance": analyst_data["data"].get("provenance"),

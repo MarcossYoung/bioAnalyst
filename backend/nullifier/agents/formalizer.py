@@ -63,7 +63,7 @@ FORMALIZER_STAGE2_SPEC = AgentSpec(
     output_contract=OutputContract(
         summary="Structured atomic-claim decomposition.",
         fields=(
-            OutputField("atomic_claims", "List of minimal testable predictions."),
+            OutputField("atomic_claims", "List of minimal testable predictions. Each claim must include construct: set_difference, cross_lineage_rate_correlation, or phenotype_association."),
             OutputField("key_search_terms", "Search terms for literature retrieval."),
         ),
     ),
@@ -71,6 +71,7 @@ FORMALIZER_STAGE2_SPEC = AgentSpec(
 
 
 BIOLOGY_DOMAINS = {"biology", "neuroscience", "genomics", "molecular_biology", "neurobiology"}
+ALLOWED_CLAIM_CONSTRUCTS = {"set_difference", "cross_lineage_rate_correlation", "phenotype_association"}
 
 
 def _text_list(value) -> list[str]:
@@ -161,11 +162,30 @@ def _normalize_stage2_output(stage2: dict) -> dict:
         normalized_claim["id"] = str(claim.get("id") or f"claim_{idx + 1}")
         normalized_claim["statement"] = statement.strip()
         normalized_claim["null_hypothesis"] = null_hypothesis.strip()
+        construct = str(claim.get("construct") or "").strip()
+        if construct not in ALLOWED_CLAIM_CONSTRUCTS:
+            construct = _infer_claim_construct(normalized_claim)
+        normalized_claim["construct"] = construct
         normalized_claims.append(normalized_claim)
 
     out["atomic_claims"] = normalized_claims
     out["key_search_terms"] = _text_list(out.get("key_search_terms"))
     return out
+
+
+def _infer_claim_construct(claim: dict) -> str:
+    text = " ".join(
+        str(claim.get(k, "") or "")
+        for k in ("statement", "relationship", "context", "mechanism", "null_hypothesis")
+    ).lower()
+    if (
+        ("correlated" in text or "co-vary" in text or "covary" in text or "co-evol" in text)
+        and ("lineage" in text or "phylogen" in text or "mammal" in text or "species" in text or "evolution" in text)
+    ):
+        return "cross_lineage_rate_correlation"
+    if "phenotype" in text or "brain size" in text or "trait" in text:
+        return "phenotype_association"
+    return "set_difference"
 
 
 def formalize_stage1(raw_text: str) -> dict:
