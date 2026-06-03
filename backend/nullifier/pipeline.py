@@ -143,6 +143,7 @@ def run_pipeline(
                         gnomad_data=analyst_data["gnomad_data"],
                         phylo_data=analyst_data["phylo_data"],
                         paml_data=analyst_data.get("paml_data"),
+                        rdnds_data=analyst_data.get("rdnds_data"),
                     ),
                     on_event=compute_events.append,
                 )

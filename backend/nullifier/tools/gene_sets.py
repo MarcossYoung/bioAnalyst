@@ -36,6 +36,7 @@ import openpyxl
 
 from ..provenance import make_provenance
 from ..config.loader import load_config
+from .panels import random_background_genes
 
 SYNGO_RELEASE = "1.3"
 SYNGO_DIR = Path(__file__).resolve().parents[3] / "syngo1.3_complete_data"
@@ -287,6 +288,7 @@ def expand(starter_entities: Iterable[str], hypothesis: str, domain: str,
 
     total_expanded = sum(len(v) for v in expanded.values())
     total_controls = sum(len(v) for v in controls.values())
+    background = {"background.random_300": random_background_genes()}
 
     prov = make_provenance(
         source="gene_sets.expand",
@@ -305,6 +307,7 @@ def expand(starter_entities: Iterable[str], hypothesis: str, domain: str,
         "starter_count": len(starter),
         "expanded": expanded,
         "controls": controls,
+        "background": background,
         "candidate_scores": scored,
         "min_score": min_score,
         "source": f"SynGO {SYNGO_RELEASE} + {BBB_VERSION} + hardcoded controls",
@@ -329,6 +332,10 @@ def all_genes(expansion: dict) -> list[str]:
             if g.upper() not in seen:
                 out.append(g); seen.add(g.upper())
     for genes in expansion.get("controls", {}).values():
+        for g in genes:
+            if g.upper() not in seen:
+                out.append(g); seen.add(g.upper())
+    for genes in expansion.get("background", {}).values():
         for g in genes:
             if g.upper() not in seen:
                 out.append(g); seen.add(g.upper())

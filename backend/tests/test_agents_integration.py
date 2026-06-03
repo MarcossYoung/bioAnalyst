@@ -3,6 +3,7 @@
 from nullifier.agents import formalizer, librarian, methodologist
 from nullifier.agents.analyst import _set_statistics
 from nullifier.agents.semantic import normalize_atomic_claim
+from nullifier.tools.genomic_data import build_data
 from nullifier.tools.literature import citation_similarity
 from nullifier.tools.query_expander import expand_queries
 
@@ -212,7 +213,7 @@ def test_citation_similarity_rejects_wrong_domain_match():
     assert score < 0.35
 
 
-def test_methodologist_returns_untestable_for_cross_lineage_construct():
+def test_methodologist_returns_mirrortree_for_cross_lineage_construct():
     plan = methodologist.run_methodologist(
         {
             "core_hypothesis": "co-evolution",
@@ -229,9 +230,61 @@ def test_methodologist_returns_untestable_for_cross_lineage_construct():
         {"groups": {}, "variables": {}, "n_genes": 0},
     )
 
-    assert plan["untestable"] is True
-    assert plan["required_construct"] == "cross_lineage_rate_correlation"
+    assert plan.get("untestable") is not True
+    assert plan["tests_requested"][0]["test"] == "mirrortree_lite"
+    assert plan["tests_requested"][0]["inputs"]["background"] == "background.random_300"
+    assert plan["claim_constructs"] == ["cross_lineage_rate_correlation"]
     assert plan["primary_tests"] == []
+
+
+def test_build_data_attaches_filtered_rate_vectors():
+    expansion = {
+        "starter": ["G1"],
+        "expanded": {"bbb": ["G2"]},
+        "background": {"background.random_300": ["BG1"]},
+    }
+    gene_data = {
+        "G1": {
+            "orthologs": [
+                {"target_species": "mus_musculus", "ortholog_type": "ortholog_one2one"},
+                {"target_species": "rattus_norvegicus", "ortholog_type": "ortholog_one2one"},
+                {"target_species": "canis_lupus_familiaris", "ortholog_type": "ortholog_one2many"},
+            ],
+        },
+        "G2": {
+            "orthologs": [
+                {"target_species": "mus_musculus", "ortholog_type": "ortholog_one2one"},
+                {"target_species": "rattus_norvegicus", "ortholog_type": "ortholog_one2one"},
+            ],
+        },
+        "BG1": {
+            "orthologs": [
+                {"target_species": "mus_musculus", "ortholog_type": "ortholog_one2one"},
+                {"target_species": "rattus_norvegicus", "ortholog_type": "ortholog_one2one"},
+            ],
+        },
+    }
+    rdnds_data = {
+        "G1": {"mus_musculus": 1.0, "rattus_norvegicus": 0.2, "canis_lupus_familiaris": 0.3},
+        "G2": {"mus_musculus": 0.4, "rattus_norvegicus": 10.0},
+        "BG1": {"mus_musculus": 0.15, "rattus_norvegicus": 0.25},
+    }
+
+    data = build_data(
+        gene_data,
+        expansion,
+        rdnds_data=rdnds_data,
+        panel=["mus_musculus", "rattus_norvegicus", "canis_lupus_familiaris"],
+    )
+
+    vectors = data["rate_vectors"]
+    assert data["gene_index"] == ["G1", "G2"]
+    assert vectors["gene_index"] == ["G1", "G2", "BG1"]
+    assert vectors["sets"]["expanded.bbb"] == ["G2"]
+    assert vectors["rates"]["G1"] == [None, 0.2, None]
+    assert vectors["rates"]["G2"] == [0.4, None, None]
+    assert vectors["coverage"]["BG1"]["usable_rates"] == 2
+    assert data["provenance"]["rate_vectors"]["background_genes"] == 1
 
 
 def test_set_statistics_flags_dnds_saturation():

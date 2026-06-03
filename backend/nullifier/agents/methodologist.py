@@ -8,7 +8,6 @@ SUPPORTED_CONSTRUCTS = {
     for construct in (spec.get("constructs") or set())
 }
 DEFERRED_CONSTRUCTS = {
-    "cross_lineage_rate_correlation": "Requires mirrortree_lite / phylogenetic independent-contrast style branch-rate correlation (planned in W3).",
     "phenotype_association": "Requires PGLS or an equivalent phylogenetic phenotype-association model.",
 }
 
@@ -67,6 +66,26 @@ def run_methodologist(
             ),
             "claim_constructs": sorted(claim_constructs),
             "rationale": "Construct-validity gate prevented mismatched statistical tests.",
+        }
+    if "cross_lineage_rate_correlation" in claim_constructs:
+        return {
+            "tests_requested": [
+                {
+                    "test": "mirrortree_lite",
+                    "inputs": {
+                        "set_a": "starter",
+                        "background": "background.random_300",
+                        "min_shared_species": 5,
+                        "n_iter": 2000,
+                        "seed": 0,
+                    },
+                    "rationale": "Cross-lineage rate-correlation claims require per-lineage dN/dS covariation, not scalar set differences.",
+                }
+            ],
+            "primary_tests": [],
+            "correction": "none",
+            "claim_constructs": sorted(claim_constructs),
+            "rationale": "Use mirrortree-lite for the cross-lineage rate-correlation construct.",
         }
 
     user = _build_user_prompt(formalized, expansion, data_summary, completed_analysis or [])
@@ -137,7 +156,9 @@ def _build_user_prompt(
             "Phylostratigraphy (None when unavailable): "
             "phylo_age (integer phylostratum, 1=oldest/most conserved, higher=more recently evolved; "
             "Liebeskind 2016 consensus). "
-            "variables: same metrics as aligned vectors across gene_index. tables: typically empty."
+            "variables: same metrics as aligned vectors across gene_index. tables: typically empty. "
+            "rate_vectors: panel-aligned per-lineage dN/dS vectors for mirrortree_lite, "
+            "with sets starter, expanded.<set>, and background.random_300."
         ),
         "prepared_groups": "\n".join(groups_lines) or "(none)",
         "prepared_variables": "\n".join(variables_lines) or "(none)",

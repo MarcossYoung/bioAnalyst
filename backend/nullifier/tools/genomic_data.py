@@ -5,6 +5,8 @@ Pure helpers — no LLM, no network, no file I/O.
 """
 from statistics import mean
 
+from .panels import mammal_panel
+
 
 METRICS = ("dnds", "ortholog_count", "paralog_count", "duplication_count",
            "regulatory_feature_count", "loeuf", "pli", "phylo_age",
@@ -57,9 +59,96 @@ def _all_genes_in_order(expansion: dict) -> list:
     return out
 
 
+def _one2one_panel_species(record: dict, panel_set: set[str]) -> set[str]:
+    out: set[str] = set()
+    for ortholog in (record or {}).get("orthologs") or []:
+        species = str(ortholog.get("target_species") or "").lower()
+        orth_type = str(ortholog.get("ortholog_type") or "").lower()
+        if species in panel_set and "one2one" in orth_type:
+            out.add(species)
+    return out
+
+
+def _rate_value(value):
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v < 0 or v >= 10:
+        return None
+    if abs(v - 1.0) < 0.01:
+        return None
+    return v
+
+
+def per_gene_rate_vectors(
+    gene_data: dict,
+    expansion: dict,
+    rdnds_data: dict | None = None,
+    panel: list[str] | None = None,
+) -> dict:
+    """Build panel-aligned per-lineage dN/dS vectors for mirrortree-lite.
+
+    This is deliberately parallel to scalar ``per_gene_metrics``: it does not
+    collapse across species and it filters to one-to-one orthologs in the fixed
+    panel before attaching rates.
+    """
+    panel = [str(s).lower() for s in (panel or mammal_panel())]
+    panel_set = set(panel)
+    rates: dict[str, list[float | None]] = {}
+    coverage: dict[str, dict] = {}
+
+    all_genes: list[str] = []
+    for pool in (
+        [expansion.get("starter") or []]
+        + list((expansion.get("expanded") or {}).values())
+        + list((expansion.get("background") or {}).values())
+    ):
+        for gene in pool:
+            if gene not in all_genes:
+                all_genes.append(gene)
+
+    for gene in all_genes:
+        record = gene_data.get(gene) or {}
+        species_values = {str(k).lower(): v for k, v in ((rdnds_data or {}).get(gene) or {}).items()}
+        allowed_species = _one2one_panel_species(record, panel_set)
+        vector = [
+            _rate_value(species_values.get(species)) if species in allowed_species else None
+            for species in panel
+        ]
+        rates[gene] = vector
+        coverage[gene] = {
+            "one2one_panel_species": len(allowed_species),
+            "usable_rates": sum(1 for v in vector if v is not None),
+        }
+
+    sets = {"starter": list(expansion.get("starter") or [])}
+    for name, genes in (expansion.get("expanded") or {}).items():
+        sets[f"expanded.{name}"] = list(genes)
+    for name, genes in (expansion.get("background") or {}).items():
+        sets[name] = list(genes)
+
+    return {
+        "panel": panel,
+        "gene_index": all_genes,
+        "sets": sets,
+        "rates": rates,
+        "coverage": coverage,
+        "provenance": {
+            "source": "r_seqinr_kaks",
+            "ortholog_filter": "ortholog_one2one",
+            "saturation_filter": "drop abs(dnds - 1.0) < 0.01 and dnds >= 10",
+            "background_set": "background.random_300",
+        },
+    }
+
+
 def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                gnomad_data: dict | None = None, phylo_data: dict | None = None,
-               paml_data: dict | None = None) -> dict:
+               paml_data: dict | None = None, rdnds_data: dict | None = None,
+               panel: list[str] | None = None) -> dict:
     """Build the ``data`` dict shape ``compute.run_analysis_plan`` expects.
 
     groups: one per starter / expanded.<set> / controls.<set>, each carrying every
@@ -109,10 +198,13 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 source = ortholog.get("dnds_source") or "ensembl_compara"
                 _dnds_source_counts[source] = _dnds_source_counts.get(source, 0) + 1
 
+    rate_vectors = per_gene_rate_vectors(gene_data, expansion, rdnds_data, panel)
+
     return {
         "groups": groups,
         "variables": variables,
         "gene_index": gene_index,
+        "rate_vectors": rate_vectors,
         "tables": {},
         "provenance": {
             "gnomad": {
@@ -140,6 +232,17 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 "genes_computed": paml_n,
                 "total_genes": len(paml_data or {}),
             } if paml_data else None,
+            "rate_vectors": {
+                "source": "r_seqinr_kaks",
+                "panel_species": len(rate_vectors.get("panel") or []),
+                "genes_with_usable_rates": sum(
+                    1 for c in (rate_vectors.get("coverage") or {}).values()
+                    if c.get("usable_rates", 0) > 0
+                ),
+                "background_genes": len(
+                    (rate_vectors.get("sets") or {}).get("background.random_300", [])
+                ),
+            } if rdnds_data else None,
         },
     }
 

@@ -236,7 +236,14 @@ def run_analyst(
         rdnds_attached,
     ))
 
-    data = build_data(gene_data, expansion, gnomad_data=gnomad_data, phylo_data=phylo_data, paml_data=paml_data)
+    data = build_data(
+        gene_data,
+        expansion,
+        gnomad_data=gnomad_data,
+        phylo_data=phylo_data,
+        paml_data=paml_data,
+        rdnds_data=rdnds_data,
+    )
 
     set_a, set_b = _split_into_sets(formalized, starter_entities)
     set_a_stats = _set_statistics(set_a, gene_data, paml_data) if set_a else None

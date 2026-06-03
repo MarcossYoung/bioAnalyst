@@ -239,6 +239,95 @@ def test_run_analysis_plan_returns_typed_untestable_result():
     assert_full_test_result(result)
 
 
+def test_residualize_rate_vectors_uses_background_means():
+    rate_vectors = {
+        "panel": ["s1", "s2", "s3"],
+        "sets": {"background.random_300": ["BG1", "BG2"]},
+        "rates": {
+            "BG1": [1.0, 2.0, None],
+            "BG2": [3.0, None, 6.0],
+            "G1": [4.0, 5.0, 7.0],
+        },
+    }
+
+    residualized = c.residualize_rate_vectors(rate_vectors)
+
+    assert residualized["background_means"] == [2.0, 2.0, 6.0]
+    assert residualized["rates"]["G1"] == [2.0, 3.0, 1.0]
+    assert residualized["rates"]["BG1"] == [-1.0, 0.0, None]
+
+
+def test_mirrortree_lite_detects_known_cross_signal():
+    rate_vectors = {
+        "panel": ["s1", "s2", "s3", "s4", "s5"],
+        "sets": {
+            "starter": ["A1", "A2"],
+            "expanded.bbb": ["B1", "B2"],
+            "background.random_300": ["C1", "C2", "C3", "C4"],
+        },
+        "rates": {
+            "A1": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "A2": [1.1, 2.1, 3.1, 4.1, 5.1],
+            "B1": [2.0, 4.0, 6.0, 8.0, 10.0],
+            "B2": [2.1, 4.2, 6.1, 8.1, 10.2],
+            "C1": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "C2": [0.2, -0.1, 0.1, -0.2, 0.0],
+            "C3": [-0.1, 0.2, -0.2, 0.1, 0.0],
+            "C4": [0.1, 0.1, -0.1, -0.1, 0.0],
+        },
+    }
+
+    result = c.mirrortree_lite(
+        rate_vectors,
+        {
+            "set_a": "starter",
+            "set_b": "expanded.bbb",
+            "background": "background.random_300",
+            "min_shared_species": 3,
+            "n_iter": 200,
+            "seed": 1,
+        },
+    )
+
+    assert_full_test_result(result)
+    assert result["available"] is True
+    assert result["statistic"] > 0.95
+    assert result["effect_size"] > 0
+    assert result["details"]["cross_pair_count"] == 4
+    assert result["details"]["null_n"] > 0
+
+
+def test_run_analysis_plan_dispatches_mirrortree_lite():
+    data = {
+        "rate_vectors": {
+            "panel": ["s1", "s2", "s3"],
+            "sets": {
+                "starter": ["A"],
+                "expanded.bbb": ["B"],
+                "background.random_300": ["C1", "C2"],
+            },
+            "rates": {
+                "A": [1.0, 2.0, 3.0],
+                "B": [2.0, 4.0, 6.0],
+                "C1": [0.0, 0.1, 0.0],
+                "C2": [0.1, 0.0, 0.1],
+            },
+        }
+    }
+    plan = {"tests_requested": [
+        {
+            "test": "mirrortree_lite",
+            "inputs": {"set_b": "expanded.bbb", "min_shared_species": 3, "n_iter": 20},
+        }
+    ]}
+
+    out = c.run_analysis_plan(plan, data)
+
+    assert len(out["tests"]) == 1
+    assert_full_test_result(out["tests"][0])
+    assert out["tests"][0]["test"] == "mirrortree_lite"
+
+
 def test_leave_one_out_skips_when_primary_tests_have_no_result():
     def rebuild(_excluded: set) -> dict:
         return {"groups": {}, "variables": {"x": [1, 2], "y": [2, 3]}, "gene_index": [], "tables": {}}

@@ -633,12 +633,209 @@ TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the sup
 - paml_branch_model  inputs: {"foreground": "primates"|"rodents"|"human"}.
   Use when hypothesis involves lineage-specific acceleration or purifying selection.
   Degrades gracefully (available=False) when codeml binary is not installed.
+- mirrortree_lite inputs: {"set_a": "starter", "set_b": "expanded.<name>", "background": "background.random_300"}.
+  Use for cross_lineage_rate_correlation claims; reads data["rate_vectors"] and compares
+  background-residualized cross-set per-lineage dN/dS covariation against a random-background null.
 - Pairwise dN/dS is available as metric/variable "dnds" when R seqinr or Ensembl
   supplies values. For coordinated-rate hypotheses, request spearman with
   {"x": "dnds", "y": "<other aligned variable>"} or group tests with metric "dnds".
 - Branch-model omega distribution tests use metric "omega_foreground" or
   "acceleration_ratio" (Kruskal-Wallis, Mann-Whitney posthoc, Spearman).
 Corrections: "benjamini_hochberg" (default for multi-test families), "bonferroni", "holm", "none".""" 
+
+
+def _mean_ignore_none(values: list[float | None]) -> float | None:
+    clean = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    return float(np.mean(clean)) if clean else None
+
+
+def residualize_rate_vectors(rate_vectors: dict, background_set: str = "background.random_300") -> dict:
+    """Subtract per-lineage background means from each gene's rate vector."""
+    panel = list((rate_vectors or {}).get("panel") or [])
+    rates = (rate_vectors or {}).get("rates") or {}
+    sets = (rate_vectors or {}).get("sets") or {}
+    background_genes = [g for g in sets.get(background_set, []) if g in rates]
+    background_means = []
+    for i in range(len(panel)):
+        background_means.append(_mean_ignore_none([rates[g][i] for g in background_genes if i < len(rates[g])]))
+
+    residuals: dict[str, list[float | None]] = {}
+    for gene, vector in rates.items():
+        residuals[gene] = [
+            (float(v) - background_means[i])
+            if v is not None and i < len(background_means) and background_means[i] is not None
+            else None
+            for i, v in enumerate(vector)
+        ]
+    return {
+        "panel": panel,
+        "sets": sets,
+        "rates": residuals,
+        "background_means": background_means,
+        "background_set": background_set,
+        "background_gene_count": len(background_genes),
+    }
+
+
+def _vector_corr(a: list, b: list, min_shared: int = 5) -> tuple[float | None, int]:
+    xs, ys = [], []
+    for x, y in zip(a or [], b or []):
+        if x is None or y is None:
+            continue
+        try:
+            fx, fy = float(x), float(y)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(fx) and math.isfinite(fy):
+            xs.append(fx)
+            ys.append(fy)
+    if len(xs) < min_shared or len(set(xs)) < 2 or len(set(ys)) < 2:
+        return None, len(xs)
+    r = float(np.corrcoef(np.asarray(xs), np.asarray(ys))[0, 1])
+    return (r, len(xs)) if math.isfinite(r) else (None, len(xs))
+
+
+def pairwise_rate_covariation(
+    residualized: dict,
+    genes_a: list[str],
+    genes_b: list[str],
+    *,
+    min_shared: int = 5,
+    exclude_self: bool = True,
+) -> list[dict]:
+    rates = residualized.get("rates") or {}
+    pairs = []
+    for ga in genes_a or []:
+        if ga not in rates:
+            continue
+        for gb in genes_b or []:
+            if gb not in rates or (exclude_self and ga == gb):
+                continue
+            r, n = _vector_corr(rates[ga], rates[gb], min_shared=min_shared)
+            if r is not None:
+                pairs.append({"gene_a": ga, "gene_b": gb, "r": r, "shared_species": n})
+    return pairs
+
+
+def _mean_pair_r(pairs: list[dict]) -> float | None:
+    vals = [p["r"] for p in pairs if isinstance(p.get("r"), (int, float))]
+    return float(np.mean(vals)) if vals else None
+
+
+def _select_default_set(sets: dict, prefix: str) -> str | None:
+    names = [name for name in sets if name.startswith(prefix)]
+    if not names:
+        return None
+    bbb = [name for name in names if "bbb" in name]
+    return sorted(bbb or names)[0]
+
+
+def mirrortree_lite(rate_vectors: dict, inputs: dict | None = None) -> dict:
+    inputs = inputs or {}
+    sets = (rate_vectors or {}).get("sets") or {}
+    set_a_name = inputs.get("set_a") or "starter"
+    set_b_name = inputs.get("set_b") or _select_default_set(sets, "expanded.")
+    background_name = inputs.get("background") or "background.random_300"
+    min_shared = int(inputs.get("min_shared_species") or 5)
+    n_iter = int(inputs.get("n_iter") or 2000)
+    seed = int(inputs.get("seed") or 0)
+
+    if not rate_vectors or not sets:
+        return _test_result("mirrortree_lite", available=False, skipped=True,
+                            skip_reason="rate_vectors data unavailable",
+                            ci=_ci_unavailable("test skipped"))
+    if set_a_name not in sets or not set_b_name or set_b_name not in sets:
+        return _test_result(
+            "mirrortree_lite", available=False, skipped=True,
+            skip_reason="set_a or set_b not available in rate_vectors",
+            details={"set_a": set_a_name, "set_b": set_b_name, "available_sets": sorted(sets)},
+            ci=_ci_unavailable("test skipped"),
+        )
+    if background_name not in sets:
+        return _test_result(
+            "mirrortree_lite", available=False, skipped=True,
+            skip_reason="background set not available in rate_vectors",
+            details={"background": background_name, "available_sets": sorted(sets)},
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    residualized = residualize_rate_vectors(rate_vectors, background_name)
+    set_a = list(sets.get(set_a_name) or [])
+    set_b = list(sets.get(set_b_name) or [])
+    background = list(sets.get(background_name) or [])
+
+    cross_pairs = pairwise_rate_covariation(residualized, set_a, set_b, min_shared=min_shared)
+    cross_mean = _mean_pair_r(cross_pairs)
+    if cross_mean is None:
+        return _test_result(
+            "mirrortree_lite", available=False, skipped=True,
+            skip_reason="no cross-set gene pairs had enough shared species",
+            details={"set_a": set_a_name, "set_b": set_b_name, "min_shared_species": min_shared},
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    within_a = pairwise_rate_covariation(residualized, set_a, set_a, min_shared=min_shared)
+    within_b = pairwise_rate_covariation(residualized, set_b, set_b, min_shared=min_shared)
+    a_bg = pairwise_rate_covariation(residualized, set_a, background, min_shared=min_shared)
+    b_bg = pairwise_rate_covariation(residualized, set_b, background, min_shared=min_shared)
+
+    rng = np.random.default_rng(seed)
+    null_values = []
+    bg_pool = [g for g in background if g in (residualized.get("rates") or {})]
+    sample_size = max(1, min(len(set_b), len(bg_pool)))
+    if len(bg_pool) >= sample_size:
+        for _ in range(n_iter):
+            sample_b = rng.choice(bg_pool, size=sample_size, replace=False).tolist()
+            pairs = pairwise_rate_covariation(residualized, set_a, sample_b, min_shared=min_shared)
+            m = _mean_pair_r(pairs)
+            if m is not None:
+                null_values.append(m)
+    p_value = (sum(1 for v in null_values if v >= cross_mean) + 1) / (len(null_values) + 1) if null_values else None
+
+    bg_means = [v for v in (_mean_pair_r(a_bg), _mean_pair_r(b_bg)) if v is not None]
+    background_mean = float(np.mean(bg_means)) if bg_means else None
+    effect = cross_mean - background_mean if background_mean is not None else cross_mean
+    return _test_result(
+        "mirrortree_lite",
+        n=len(cross_pairs),
+        statistic=cross_mean,
+        p_value=p_value,
+        significant=bool(p_value is not None and p_value < ALPHA),
+        effect_size=effect,
+        effect_size_name="cross_minus_background_mean_r",
+        ci=_ci_unavailable("permutation null distribution reported in details"),
+        method="Mirrortree-lite: Pearson correlation of background-residualized per-lineage dN/dS vectors",
+        inputs={
+            "set_a": set_a_name,
+            "set_b": set_b_name,
+            "background": background_name,
+            "min_shared_species": min_shared,
+            "n_iter": n_iter,
+            "seed": seed,
+        },
+        details={
+            "panel": residualized.get("panel"),
+            "background_gene_count": residualized.get("background_gene_count"),
+            "cross_pair_count": len(cross_pairs),
+            "within_a_mean_r": _mean_pair_r(within_a),
+            "within_b_mean_r": _mean_pair_r(within_b),
+            "set_a_vs_background_mean_r": _mean_pair_r(a_bg),
+            "set_b_vs_background_mean_r": _mean_pair_r(b_bg),
+            "background_mean_r": background_mean,
+            "null_n": len(null_values),
+            "null_mean": float(np.mean(null_values)) if null_values else None,
+            "null_p95": float(np.percentile(null_values, 95)) if null_values else None,
+            "set_sizes": {"set_a": len(set_a), "set_b": len(set_b), "background": len(background)},
+        },
+        warnings=["Tier-1 mirrortree-lite uses pairwise human-referenced dN/dS vectors; full ERC is deferred."],
+    )
+
+
+TEST_LIBRARY["mirrortree_lite"] = {
+    "fn": mirrortree_lite,
+    "kind": "rate_vectors",
+    "constructs": {"cross_lineage_rate_correlation"},
+}
 
 
 def _is_numeric_list(v) -> bool:
@@ -715,6 +912,8 @@ def _run_one(name: str, inputs: dict, data: dict) -> dict:
             return fn(_resolve_table(inputs, data))
         if kind == "paml":
             return fn(inputs, data)
+        if kind == "rate_vectors":
+            return fn((data or {}).get("rate_vectors") or {}, inputs)
     except Exception as e:  # never let a bad plan crash the pipeline
         return _test_result(name or "unknown_test", error=f"{type(e).__name__}: {e}", inputs=inputs)
     return _test_result(name or "unknown_test", error="unhandled test kind", inputs=inputs)
@@ -742,6 +941,16 @@ def _data_summary(data: dict) -> dict:
         "n_genes": len(data.get("gene_index", [])),
         "tables": list(data.get("tables", {}).keys()),
     }
+    rate_vectors = data.get("rate_vectors") or {}
+    if rate_vectors:
+        out["rate_vectors"] = {
+            "panel_species": len(rate_vectors.get("panel") or []),
+            "sets": {k: len(v or []) for k, v in (rate_vectors.get("sets") or {}).items()},
+            "genes_with_usable_rates": sum(
+                1 for c in (rate_vectors.get("coverage") or {}).values()
+                if c.get("usable_rates", 0) > 0
+            ),
+        }
     gnomad_prov = (data.get("provenance") or {}).get("gnomad")
     if gnomad_prov:
         out["gnomad_coverage"] = gnomad_prov
