@@ -120,7 +120,7 @@ export interface Scores {
   mechanistic_plausibility?: number
   counter_explanation_risk?: number
   novelty_adjusted_confidence?: number
-  genomic_evidence_alignment?: number
+  genomic_evidence_alignment?: number | null
   overall_falsifiability_score?: number
   // v5 conditional critique scores
   methods_critique_score?: number
@@ -157,6 +157,12 @@ export interface AnalystSetStats {
   dnds_max: number | null
   dnds_saturation_fraction?: number
   dnds_saturation_flag?: boolean
+  dnds_coverage_fraction?: number
+  dnds_low_coverage?: boolean
+  dnds_degenerate_low?: boolean
+  dnds_degraded?: boolean
+  dnds_usable?: boolean
+  dnds_unusable_reason?: string
   omega_foreground_n?: number
   omega_foreground_mean?: number | null
   acceleration_ratio_n?: number
@@ -167,6 +173,7 @@ export interface AnalystSetStats {
     genes_with_dnds: number
     orthologs_total: number
     orthologs_with_dnds: number
+    orthologs_without_computable_dnds?: number
     orthologs_missing_dn: number
     orthologs_missing_ds: number
     orthologs_invalid_ds: number

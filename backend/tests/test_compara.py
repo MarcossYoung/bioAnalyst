@@ -20,12 +20,16 @@ _FAKE_HOMOLOGY_BODY = {
             {
                 "type": "ortholog_one2one",
                 "method_link_type": "ENSEMBL_ORTHOLOGUES",
-                "dn": 0.05,
-                "ds": 0.1,
+                "dn_ds": 0.5,
+                "source": {
+                    "protein_id": "ENSP00000001234",
+                    "align_seq": "MA",
+                },
                 "target": {
                     "species": "mus_musculus",
                     "id": "ENSMUSG00000001234",
                     "protein_id": "ENSMUSP00000001234",
+                    "align_seq": "MA",
                     "perc_id": 95.0,
                     "perc_pos": 97.0,
                 },
@@ -49,8 +53,7 @@ _FAKE_ZERO_DN_BODY = {
             {
                 "type": "ortholog_one2one",
                 "method_link_type": "ENSEMBL_ORTHOLOGUES",
-                "dn": 0.0,
-                "ds": 0.2,
+                "dn_ds": 0.0,
                 "target": {
                     "species": "mus_musculus",
                     "id": "ENSMUSG00000001234",
@@ -79,6 +82,9 @@ def test_fetch_orthologs_by_id_cache_miss_then_hit(tmp_path, monkeypatch):
         assert len(result1) == 1
         assert result1[0]["target_species"] == "mus_musculus"
         assert result1[0]["dnds"] == pytest.approx(0.5)
+        assert result1[0]["dn_ds"] == 0.5
+        assert result1[0]["source_protein_id"] == "ENSP00000001234"
+        assert result1[0]["source_align_seq"] == "MA"
         assert result1[0]["method_link_type"] == "ENSEMBL_ORTHOLOGUES"
         assert mock_get.call_count == 1
 
@@ -144,7 +150,7 @@ def test_fetch_orthologs_by_id_preserves_zero_dn_dnds(tmp_path, monkeypatch):
     with patch("nullifier.tools.ensembl.requests.get",
                return_value=_mock_resp(_FAKE_ZERO_DN_BODY)):
         result = e.fetch_orthologs_by_id("ENSG00000000009")
-        assert result[0]["dn"] == 0.0
+        assert result[0]["dn_ds"] == 0.0
         assert result[0]["dnds"] == 0.0
 
 
@@ -158,7 +164,7 @@ def test_get_orthologs_preserves_zero_dn_dnds(tmp_path, monkeypatch):
     with patch("nullifier.tools.ensembl.requests.get",
                return_value=_mock_resp(_FAKE_ZERO_DN_BODY)):
         result = e.get_orthologs("SHANK3")
-        assert result[0]["dn"] == 0.0
+        assert result[0]["dn_ds"] == 0.0
         assert result[0]["dnds"] == 0.0
 
 
@@ -185,6 +191,27 @@ def test_fetch_cds_sequence_returns_none_on_error(tmp_path, monkeypatch):
     with patch("nullifier.tools.ensembl.requests.get", side_effect=ConnectionError("down")):
         result = e.fetch_cds_sequence("ENSG00000000005")
         assert result is None
+
+
+def test_resolve_cds_for_protein_uses_parent_transcript(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    with patch(
+        "nullifier.tools.ensembl.requests.get",
+        side_effect=[
+            _mock_resp({"id": "ENSP0001", "Parent": "ENST0001"}),
+            _mock_resp({"seq": "ATGCCCTAA"}),
+        ],
+    ) as mock_get:
+        result = e.resolve_cds_for_protein("ENSP0001")
+
+    assert result == "ATGCCCTAA"
+    assert mock_get.call_args_list[0].args[0] == "https://rest.ensembl.org/lookup/id/ENSP0001"
+    assert mock_get.call_args_list[1].args[0] == "https://rest.ensembl.org/sequence/id/ENST0001"
 
 
 # ── fetch_compara_metadata ───────────────────────────────────────────────────

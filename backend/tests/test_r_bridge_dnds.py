@@ -75,6 +75,6 @@ def test_attach_rdnds_to_orthologs_lowercase_species_join():
 
     assert attached == 1
     assert gene_data["GENE1"]["orthologs"][0]["dnds"] == 0.22
-    assert gene_data["GENE1"]["orthologs"][0]["dnds_source"] == "r_seqinr_kaks"
+    assert gene_data["GENE1"]["orthologs"][0]["dnds_source"] == "homology_pal2nal_ng86"
     assert gene_data["GENE1"]["orthologs"][1]["dnds"] == 0.1
-    assert gene_data["GENE1"]["orthologs"][1]["dnds_source"] == "ensembl_compara"
+    assert gene_data["GENE1"]["orthologs"][1]["dnds_source"] == "ensembl_compara_dn_ds"

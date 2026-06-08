@@ -1,7 +1,7 @@
 """Smoke tests for agent/data handoff guards."""
 
-from nullifier.agents import formalizer, librarian, methodologist
-from nullifier.agents.analyst import _set_statistics
+from nullifier.agents import formalizer, librarian, methodologist, skeptic
+from nullifier.agents.analyst import _set_statistics, _set_usability
 from nullifier.agents.semantic import normalize_atomic_claim
 from nullifier.tools.genomic_data import build_data
 from nullifier.tools.literature import citation_similarity
@@ -284,7 +284,9 @@ def test_build_data_attaches_filtered_rate_vectors():
     assert vectors["rates"]["G1"] == [None, 0.2, None]
     assert vectors["rates"]["G2"] == [0.4, None, None]
     assert vectors["coverage"]["BG1"]["usable_rates"] == 2
+    assert vectors["provenance"]["source"] == "homology_pal2nal_ng86"
     assert data["provenance"]["rate_vectors"]["background_genes"] == 1
+    assert data["provenance"]["rate_vectors"]["source"] == "homology_pal2nal_ng86"
 
 
 def test_set_statistics_flags_dnds_saturation():
@@ -298,6 +300,53 @@ def test_set_statistics_flags_dnds_saturation():
 
     assert stats["dnds_saturation_flag"] is True
     assert stats["dnds_saturation_fraction"] == 2 / 3
+    assert stats["dnds_degraded"] is True
+
+
+def test_set_usability_flags_sets_independently():
+    set_a = {
+        "dnds_n": 3,
+        "dnds_saturation_fraction": 0.67,
+        "dnds_degraded": True,
+        "dnds_unusable_reason": "Most computable dN/dS values are pinned near 1.0.",
+    }
+    set_b = {
+        "dnds_n": 6,
+        "dnds_saturation_fraction": 0.0,
+        "dnds_degraded": False,
+        "dnds_unusable_reason": "",
+    }
+
+    usability = _set_usability(set_a, set_b)
+
+    assert usability["cross_set_allowed"] is False
+    assert usability["sets"]["set_a"]["usable"] is False
+    assert usability["sets"]["set_b"]["usable"] is True
+    assert "set_a" in usability["reason"]
+
+
+def test_skeptic_sets_genomic_score_none_when_no_primary_test_ran():
+    verdict = {
+        "scores": {"genomic_evidence_alignment": 5, "overall_falsifiability_score": 6},
+        "verdict_justification": "Initial.",
+    }
+    analyst_result = {
+        "compute_results": {
+            "tests": [{
+                "test": "mirrortree_lite",
+                "available": False,
+                "skipped": True,
+                "skip_reason": "cross-set comparison refused",
+            }]
+        },
+        "interpretation": {"overall_genomic_assessment": "untestable"},
+        "dnds_saturation": {"flag": True, "reason": "set_a degraded"},
+    }
+
+    out = skeptic._apply_guardrails(verdict, {"classifier_degraded": False}, analyst_result)
+
+    assert out["scores"]["genomic_evidence_alignment"] is None
+    assert "not scored" in out["verdict_justification"]
 
 
 def test_query_expander_accepts_new_claim_shape(monkeypatch):

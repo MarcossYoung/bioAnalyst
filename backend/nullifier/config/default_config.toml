@@ -44,7 +44,8 @@ max_genes_for_full_analysis = 500
 [r]
 enabled = true
 r_home = ""  # auto-detect if empty; set manually if R is in a non-standard location
-# seqinr powers primary pairwise dN/dS; ape/phangorn/caper support tree/R helpers.
+# seqinr can be enabled as an opt-in pairwise dN/dS fallback; ape/phangorn/caper support tree/R helpers.
+pairwise_dnds_fallback = false
 required_packages = ["ape", "phangorn", "seqinr", "caper"]
 
 [paml]

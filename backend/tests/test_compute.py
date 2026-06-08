@@ -297,6 +297,37 @@ def test_mirrortree_lite_detects_known_cross_signal():
     assert result["details"]["null_n"] > 0
 
 
+def test_mirrortree_lite_skips_degraded_set():
+    rate_vectors = {
+        "panel": ["s1", "s2", "s3"],
+        "sets": {
+            "starter": ["A"],
+            "expanded.bbb": ["B"],
+            "background.random_300": ["C1", "C2"],
+        },
+        "rates": {
+            "A": [1.0, 2.0, 3.0],
+            "B": [2.0, 4.0, 6.0],
+            "C1": [0.0, 0.1, 0.0],
+            "C2": [0.1, 0.0, 0.1],
+        },
+        "set_usability": {
+            "starter": {"usable": False, "reason": "set_a: too few computable rates"},
+            "expanded.bbb": {"usable": True, "reason": ""},
+        },
+    }
+
+    result = c.mirrortree_lite(
+        rate_vectors,
+        {"set_b": "expanded.bbb", "min_shared_species": 3, "n_iter": 20},
+    )
+
+    assert_full_test_result(result)
+    assert result["available"] is False
+    assert result["skipped"] is True
+    assert "starter" in result["skip_reason"]
+
+
 def test_run_analysis_plan_dispatches_mirrortree_lite():
     data = {
         "rate_vectors": {
