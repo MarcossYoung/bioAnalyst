@@ -130,14 +130,29 @@ def per_gene_rate_vectors(
     for name, genes in (expansion.get("background") or {}).items():
         sets[name] = list(genes)
 
+    set_usability = {}
+    for name, genes in sets.items():
+        gene_count = len(genes)
+        genes_with_rates = sum(1 for g in genes if coverage.get(g, {}).get("usable_rates", 0) > 0)
+        usable_rates = sum(int(coverage.get(g, {}).get("usable_rates", 0)) for g in genes)
+        usable = gene_count > 0 and genes_with_rates >= min(2, gene_count) and usable_rates >= 5
+        set_usability[name] = {
+            "usable": usable,
+            "reason": "" if usable else "too few genes/species have computable non-saturated dN/dS rates",
+            "gene_count": gene_count,
+            "genes_with_rates": genes_with_rates,
+            "usable_rates": usable_rates,
+        }
+
     return {
         "panel": panel,
         "gene_index": all_genes,
         "sets": sets,
         "rates": rates,
         "coverage": coverage,
+        "set_usability": set_usability,
         "provenance": {
-            "source": "r_seqinr_kaks",
+            "source": "homology_pal2nal_ng86",
             "ortholog_filter": "ortholog_one2one",
             "saturation_filter": "drop abs(dnds - 1.0) < 0.01 and dnds >= 10",
             "background_set": "background.random_300",
@@ -195,7 +210,7 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
         for ortholog in (d or {}).get("orthologs") or []:
             dnds = ortholog.get("dnds")
             if dnds is not None and dnds < 10:
-                source = ortholog.get("dnds_source") or "ensembl_compara"
+                source = ortholog.get("dnds_source") or "unknown"
                 _dnds_source_counts[source] = _dnds_source_counts.get(source, 0) + 1
 
     rate_vectors = per_gene_rate_vectors(gene_data, expansion, rdnds_data, panel)
@@ -233,7 +248,7 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 "total_genes": len(paml_data or {}),
             } if paml_data else None,
             "rate_vectors": {
-                "source": "r_seqinr_kaks",
+                "source": "homology_pal2nal_ng86",
                 "panel_species": len(rate_vectors.get("panel") or []),
                 "genes_with_usable_rates": sum(
                     1 for c in (rate_vectors.get("coverage") or {}).values()

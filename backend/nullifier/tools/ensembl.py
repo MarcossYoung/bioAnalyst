@@ -307,21 +307,7 @@ def fetch_orthologs_by_id_batch(
         for entry in entries:
             source_id = entry.get("id")
             homologies = entry.get("homologies", [])
-            parsed = []
-            for h in homologies:
-                target = h.get("target", {})
-                parsed.append({
-                    "target_species": target.get("species"),
-                    "target_id": target.get("id"),
-                    "target_protein_id": target.get("protein_id"),
-                    "ortholog_type": h.get("type"),
-                    "perc_id": target.get("perc_id"),
-                    "perc_pos": target.get("perc_pos"),
-                    "dn": h.get("dn"),
-                    "ds": h.get("ds"),
-                    "dnds": _dnds(h),
-                    "method_link_type": h.get("method_link_type"),
-                })
+            parsed = [_parse_ortholog(h) for h in homologies]
             if source_id:
                 out[source_id] = parsed
         fetched += len(chunk)
@@ -331,11 +317,37 @@ def fetch_orthologs_by_id_batch(
 
 
 def _dnds(homology: dict) -> float | None:
-    dn = homology.get("dn")
-    ds = homology.get("ds")
-    if dn is None or ds is None or ds <= 0:
+    value = homology.get("dn_ds")
+    if value is None:
         return None
-    return dn / ds
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _parse_ortholog(h: dict) -> dict:
+    source = h.get("source", {}) or {}
+    target = h.get("target", {}) or {}
+    dnds = _dnds(h)
+    out = {
+        "target_species": target.get("species"),
+        "target_id": target.get("id"),
+        "source_protein_id": source.get("protein_id"),
+        "target_protein_id": target.get("protein_id"),
+        "source_align_seq": source.get("align_seq"),
+        "target_align_seq": target.get("align_seq"),
+        "ortholog_type": h.get("type"),
+        "perc_id": target.get("perc_id"),
+        "perc_pos": target.get("perc_pos"),
+        "dn_ds": h.get("dn_ds"),
+        "dnds": dnds,
+        "method_link_type": h.get("method_link_type"),
+    }
+    if dnds is not None:
+        out["dnds_source"] = "ensembl_compara_dn_ds"
+    return out
 
 
 def get_orthologs(symbol: str, target_taxon: int = 40674,  # Mammalia
@@ -352,19 +364,7 @@ def get_orthologs(symbol: str, target_taxon: int = 40674,  # Mammalia
     homologies = data["data"][0].get("homologies", [])
     out = []
     for h in homologies:
-        target = h.get("target", {})
-        out.append({
-            "target_species": target.get("species"),
-            "target_id": target.get("id"),
-            "target_protein_id": target.get("protein_id"),
-            "ortholog_type": h.get("type"),
-            "perc_id": target.get("perc_id"),
-            "perc_pos": target.get("perc_pos"),
-            "dn": h.get("dn"),
-            "ds": h.get("ds"),
-            "dnds": _dnds(h),
-            "method_link_type": h.get("method_link_type"),
-        })
+        out.append(_parse_ortholog(h))
     return out
 
 
@@ -492,33 +492,34 @@ def fetch_orthologs_by_id(ensg_id: str, target_taxon: int = 40674,
     homologies = data["data"][0].get("homologies", [])
     out = []
     for h in homologies:
-        target = h.get("target", {})
-        out.append({
-            "target_species": target.get("species"),
-            "target_id": target.get("id"),
-            "target_protein_id": target.get("protein_id"),
-            "ortholog_type": h.get("type"),
-            "perc_id": target.get("perc_id"),
-            "perc_pos": target.get("perc_pos"),
-            "dn": h.get("dn"),
-            "ds": h.get("ds"),
-            "dnds": _dnds(h),
-            "method_link_type": h.get("method_link_type"),
-        })
+        out.append(_parse_ortholog(h))
     return out
 
 
-def fetch_cds_sequence(ensg_id: str, use_cache: bool = True) -> str | None:
-    """GET /sequence/id/{ensg_id}?type=cds — canonical CDS for PAML alignment.
+def fetch_cds_sequence(ensembl_id: str, use_cache: bool = True) -> str | None:
+    """GET /sequence/id/{ensembl_id}?type=cds.
     Returns raw nucleotide string or None on failure."""
     data = _request(
-        f"/sequence/id/{ensg_id}",
+        f"/sequence/id/{ensembl_id}",
         {"type": "cds", "content_type": "application/json"},
         use_cache,
     )
     if not data:
         return None
     return data.get("seq") or data.get("sequence")
+
+
+def resolve_cds_for_protein(protein_id: str, use_cache: bool = True) -> str | None:
+    """Resolve an ENSP/ortholog protein ID to its parent transcript CDS."""
+    if not protein_id:
+        return None
+    data = _request(f"/lookup/id/{protein_id}", {"expand": 0}, use_cache)
+    if not isinstance(data, dict):
+        return None
+    transcript_id = data.get("Parent")
+    if not transcript_id:
+        return None
+    return fetch_cds_sequence(transcript_id, use_cache=use_cache)
 
 
 def fetch_gene_tree_aligned(ensembl_id: str, use_cache: bool = True) -> dict | None:

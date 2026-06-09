@@ -636,8 +636,8 @@ TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the sup
 - mirrortree_lite inputs: {"set_a": "starter", "set_b": "expanded.<name>", "background": "background.random_300"}.
   Use for cross_lineage_rate_correlation claims; reads data["rate_vectors"] and compares
   background-residualized cross-set per-lineage dN/dS covariation against a random-background null.
-- Pairwise dN/dS is available as metric/variable "dnds" when R seqinr or Ensembl
-  supplies values. For coordinated-rate hypotheses, request spearman with
+- Pairwise dN/dS is available as metric/variable "dnds" when homology alignments
+  and CDS pass the NG86 estimator gates. For coordinated-rate hypotheses, request spearman with
   {"x": "dnds", "y": "<other aligned variable>"} or group tests with metric "dnds".
 - Branch-model omega distribution tests use metric "omega_foreground" or
   "acceleration_ratio" (Kruskal-Wallis, Mann-Whitney posthoc, Spearman).
@@ -756,6 +756,24 @@ def mirrortree_lite(rate_vectors: dict, inputs: dict | None = None) -> dict:
             "mirrortree_lite", available=False, skipped=True,
             skip_reason="background set not available in rate_vectors",
             details={"background": background_name, "available_sets": sorted(sets)},
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    set_usability = (rate_vectors or {}).get("set_usability") or {}
+    degraded = [
+        (name, set_usability.get(name) or {})
+        for name in (set_a_name, set_b_name)
+        if name in set_usability and not (set_usability.get(name) or {}).get("usable", True)
+    ]
+    if degraded:
+        reason = "; ".join(
+            f"{name}: {meta.get('reason') or 'degraded dN/dS coverage'}"
+            for name, meta in degraded
+        )
+        return _test_result(
+            "mirrortree_lite", available=False, skipped=True,
+            skip_reason=f"cross-set comparison refused because {reason}",
+            details={"set_usability": {name: meta for name, meta in degraded}},
             ci=_ci_unavailable("test skipped"),
         )
 

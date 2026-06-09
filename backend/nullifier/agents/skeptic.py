@@ -61,13 +61,13 @@ Scores are from 1 (falsified) to 10 (strongly supported):
 
 Use NOVEL-UNTESTED when novelty_flag is unstudied across claims.
 If classifier_degraded is true, do not treat empty classifications as a confirmed literature void.
-If genomic evidence is marked untestable, score genomic_evidence_alignment as 5 (neutral), not as support or contradiction.
+If no genomic test ran or genomic evidence is marked untestable, report genomic_evidence_alignment as N/A; do not score it.
 Propose the single most decisive experiment or analysis."""
 
 SKEPTIC_DNDS_LIMITATION = (
-    "Known data limitation: pairwise dN/dS is R-computed with seqinr::kaks when a Compara "
-    "alignment exists, with Ensembl homology dn/ds fields as fallback. Missing pairwise "
-    "dN/dS is a coverage limitation and should not lower the methodological score by itself. "
+    "Known data limitation: pairwise dN/dS is computed from Ensembl homology protein alignments "
+    "threaded onto transcript CDS with a conservative NG86 estimator. Missing pairwise dN/dS is "
+    "a coverage/quality limitation and should not lower the methodological score by itself. "
     "When PAML branch-model omega is available, use it when considering evolutionary acceleration alternatives."
 )
 
@@ -179,15 +179,26 @@ def _apply_guardrails(verdict: dict, evidence: dict, analyst_result: dict | None
     scores = dict(out.get("scores") or {})
     analyst_compute = (analyst_result or {}).get("compute_results") or {}
     analyst_interp = (analyst_result or {}).get("interpretation") or {}
-    genomic_untestable = (
-        analyst_compute.get("untestable")
+    tests = analyst_compute.get("tests") or []
+    genomic_test_ran = any(
+        isinstance(t, dict)
+        and t.get("test") != "untestable"
+        and not t.get("skipped")
+        and t.get("available", True)
+        and not t.get("error")
+        for t in tests
+    )
+    genomic_not_scored = (
+        not genomic_test_ran
+        or not analyst_result
+        or analyst_compute.get("untestable")
         or analyst_interp.get("overall_genomic_assessment") == "untestable"
         or ((analyst_result or {}).get("dnds_saturation") or {}).get("flag")
     )
-    if genomic_untestable:
-        scores["genomic_evidence_alignment"] = 5
+    if genomic_not_scored:
+        scores["genomic_evidence_alignment"] = None
         out["scores"] = scores
-        note = "Genomic axis marked untestable by construct-validity gate; scored neutral."
+        note = "No genomic test was run; genomic axis not scored."
         out["verdict_justification"] = _append_note(out.get("verdict_justification", ""), note)
     if evidence.get("classifier_degraded"):
         out["librarian_sanity_check"] = _append_note(
@@ -236,7 +247,7 @@ def _format_completed_analysis(methods_used: list[str], completed: list[dict], a
 
 def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
     if not analyst_result or analyst_result.get("skipped"):
-        return "\nGENOMIC EVIDENCE: Not available - score genomic_evidence_alignment as 5 (neutral)."
+        return "\nGENOMIC EVIDENCE: Not available - report genomic_evidence_alignment as N/A; do not score."
 
     interp = analyst_result.get("interpretation", {})
     if (
@@ -249,7 +260,7 @@ def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
             reason = (analyst_result.get("dnds_saturation") or {}).get("reason", "")
         return (
             "\nGENOMIC EVIDENCE: Untestable/low-confidence by guardrail - "
-            "score genomic_evidence_alignment as 5 (neutral).\n"
+            "report genomic_evidence_alignment as N/A; do not score.\n"
             f"  Required construct: {interp.get('required_construct') or (analyst_result.get('compute_results') or {}).get('required_construct')}\n"
             f"  Reason: {reason}"
         )

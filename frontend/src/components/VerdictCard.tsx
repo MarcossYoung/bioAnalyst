@@ -36,7 +36,7 @@ export function VerdictCard({ verdict, mode = 'hypothesis' }: VerdictCardProps) 
   const style = VERDICT_STYLE[verdict.verdict] ?? VERDICT_STYLE['WEAK']
   const alts = verdict.top_alternative_explanations ?? []
   const scoreRows = mode === 'analysis' ? CRITIQUE_SCORE_ROWS : CORE_SCORE_ROWS
-  const hasScores = scoreRows.some(([key]) => verdict.scores?.[key] !== undefined && verdict.scores?.[key] !== null)
+  const hasScores = scoreRows.some(([key]) => verdict.scores?.[key] !== undefined)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -63,15 +63,16 @@ export function VerdictCard({ verdict, mode = 'hypothesis' }: VerdictCardProps) 
             <tbody>
               {scoreRows.map(([key, label]) => {
                 const val = verdict.scores?.[key]
-                if (val === undefined || val === null) return null
+                if (val === undefined) return null
+                const isNA = val === null
                 return (
                   <tr key={key} style={{ borderBottom: '1px solid var(--border-light)' }}>
                     <td style={{ padding: '5px 0', color: 'var(--text-body)', fontSize: '13px' }}>{label}</td>
                     <td style={{
                       padding: '5px 0', textAlign: 'right', fontFamily: 'ui-monospace, Consolas, monospace',
-                      fontSize: '13px', color: scoreColor(Number(val)), fontWeight: 600,
+                      fontSize: '13px', color: isNA ? 'var(--text-muted)' : scoreColor(Number(val)), fontWeight: 600,
                     }}>
-                      {Number(val).toFixed(1)} / 10
+                      {isNA ? '—' : `${Number(val).toFixed(1)} / 10`}
                     </td>
                   </tr>
                 )

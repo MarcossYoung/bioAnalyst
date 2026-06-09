@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from statistics import mean, stdev
+from statistics import mean, median, stdev
 
 from ..tools.llm_client import llm_call_json
 from ..tools import ensembl
@@ -96,47 +96,72 @@ def _fetch_rdnds_data(
     use_cache: bool = True,
     on_event=None,
 ) -> dict:
-    """Fetch Compara alignments in parallel, then run seqinr::kaks serially."""
-    from ..tools import r_bridge
+    """Compute pairwise dN/dS from homology protein alignments + CDS."""
+    from ..tools.dnds import codon_align, ng86
 
-    jobs = {}
+    protein_ids = []
     for sym in genes:
-        d = gene_data.get(sym, {})
-        if "_error" in d:
-            continue
-        ensg = (d.get("info") or {}).get("ensembl_id")
-        if ensg:
-            jobs[sym] = ensg
+        for ortholog in (gene_data.get(sym, {}) or {}).get("orthologs") or []:
+            if "one2one" not in str(ortholog.get("ortholog_type") or "").lower():
+                continue
+            protein_ids.extend([
+                ortholog.get("source_protein_id"),
+                ortholog.get("target_protein_id"),
+            ])
+    protein_ids = [pid for pid in dict.fromkeys(protein_ids) if pid]
 
-    alignments: dict[str, dict | None] = {}
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    cds_by_protein: dict[str, str | None] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
-            pool.submit(ensembl.fetch_gene_tree_aligned, ensg, use_cache): sym
-            for sym, ensg in jobs.items()
+            pool.submit(ensembl.resolve_cds_for_protein, pid, use_cache): pid
+            for pid in protein_ids
         }
         for fut in as_completed(futures):
-            sym = futures[fut]
+            pid = futures[fut]
             try:
-                alignments[sym] = fut.result()
+                cds_by_protein[pid] = fut.result()
             except Exception:
-                alignments[sym] = None
+                cds_by_protein[pid] = None
+
+    fallback_to_r = bool(load_config().get("r", {}).get("pairwise_dnds_fallback", False))
+    r_bridge = None
+    if fallback_to_r:
+        from ..tools import r_bridge as _r_bridge
+        r_bridge = _r_bridge
 
     results: dict = {}
     for sym in genes:
-        aligned = alignments.get(sym)
-        if not aligned:
-            results[sym] = None
-            continue
         if on_event:
             on_event(ev.rdnds_gene_started(sym))
-        dnds = r_bridge.pairwise_dnds(
-            aligned.get("sequences") or {},
-            reference="Homo_sapiens",
-            use_cache=use_cache,
-        )
-        results[sym] = dnds
+        species_values: dict[str, float] = {}
+        for ortholog in (gene_data.get(sym, {}) or {}).get("orthologs") or []:
+            if "one2one" not in str(ortholog.get("ortholog_type") or "").lower():
+                continue
+            species = str(ortholog.get("target_species") or "").lower()
+            if not species:
+                continue
+            aligned = codon_align(
+                ortholog.get("source_align_seq"),
+                ortholog.get("target_align_seq"),
+                cds_by_protein.get(ortholog.get("source_protein_id")),
+                cds_by_protein.get(ortholog.get("target_protein_id")),
+            )
+            if not aligned:
+                continue
+            estimate = ng86(aligned[0], aligned[1])
+            if estimate.get("dnds") is not None:
+                species_values[species] = float(estimate["dnds"])
+        if not species_values and fallback_to_r:
+            ensg = ((gene_data.get(sym) or {}).get("info") or {}).get("ensembl_id")
+            aligned_tree = ensembl.fetch_gene_tree_aligned(ensg, use_cache=use_cache) if ensg else None
+            species_values = r_bridge.pairwise_dnds(
+                (aligned_tree or {}).get("sequences") or {},
+                reference="Homo_sapiens",
+                use_cache=use_cache,
+            ) or {}
+        results[sym] = species_values or None
         if on_event:
-            on_event(ev.rdnds_gene_complete(sym, len(dnds or {})))
+            on_event(ev.rdnds_gene_complete(sym, len(species_values or {})))
     return results
 
 
@@ -150,10 +175,10 @@ def _attach_rdnds_to_orthologs(gene_data: dict, rdnds_data: dict) -> int:
             target = str(ortholog.get("target_species") or "").lower()
             if ortholog.get("dnds") is None and target in species_values:
                 ortholog["dnds"] = species_values[target]
-                ortholog["dnds_source"] = "r_seqinr_kaks"
+                ortholog["dnds_source"] = "homology_pal2nal_ng86"
                 attached += 1
             elif ortholog.get("dnds") is not None and not ortholog.get("dnds_source"):
-                ortholog["dnds_source"] = "ensembl_compara"
+                ortholog["dnds_source"] = "ensembl_compara_dn_ds"
     return attached
 
 
@@ -248,7 +273,8 @@ def run_analyst(
     set_a, set_b = _split_into_sets(formalized, starter_entities)
     set_a_stats = _set_statistics(set_a, gene_data, paml_data) if set_a else None
     set_b_stats = _set_statistics(set_b, gene_data, paml_data) if set_b else None
-    cross_set = _cross_set_analysis(set_a, set_b, gene_data) if (set_a and set_b) else None
+    dnds_saturation = _set_usability(set_a_stats, set_b_stats)
+    cross_set = _cross_set_analysis(set_a, set_b, gene_data, dnds_saturation) if (set_a and set_b) else None
 
     reproducibility = None
     if completed_analysis:
@@ -274,7 +300,7 @@ def run_analyst(
         "set_b": set_b,
         "set_a_stats": set_a_stats,
         "set_b_stats": set_b_stats,
-        "dnds_saturation": _combine_saturation_flags(set_a_stats, set_b_stats),
+        "dnds_saturation": dnds_saturation,
         "cross_set": cross_set,
         "reproducibility": reproducibility,
     }
@@ -439,6 +465,7 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
         "genes_with_dnds": 0,
         "orthologs_total": 0,
         "orthologs_with_dnds": 0,
+        "orthologs_without_computable_dnds": 0,
         "orthologs_missing_dn": 0,
         "orthologs_missing_ds": 0,
         "orthologs_invalid_ds": 0,
@@ -452,22 +479,16 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
             dnds_diag["genes_with_orthologs"] += 1
         dnds_diag["orthologs_total"] += len(orthologs)
         for o in gene_data[g]["orthologs"]:
-            ds = o.get("ds")
-            if o.get("dn") is None:
-                dnds_diag["orthologs_missing_dn"] += 1
-            if ds is None:
-                dnds_diag["orthologs_missing_ds"] += 1
-            elif ds <= 0:
-                dnds_diag["orthologs_invalid_ds"] += 1
             dnds = o.get("dnds")
             if dnds is None:
+                dnds_diag["orthologs_without_computable_dnds"] += 1
                 continue
             if dnds >= 10:
                 dnds_diag["orthologs_filtered_high"] += 1
                 continue
             dnds_values.append(dnds)
             dnds_diag["orthologs_with_dnds"] += 1
-            source = o.get("dnds_source") or "ensembl_compara"
+            source = o.get("dnds_source") or "unknown"
             dnds_diag["dnds_source_counts"][source] = dnds_diag["dnds_source_counts"].get(source, 0) + 1
             gene_has_dnds = True
         if gene_has_dnds:
@@ -483,6 +504,29 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
         sum(1 for v in dnds_values if abs(float(v) - 1.0) < 0.01) / len(dnds_values)
         if dnds_values else 0.0
     )
+    dnds_coverage_fraction = (
+        len(dnds_values) / dnds_diag["orthologs_total"]
+        if dnds_diag["orthologs_total"] else 0.0
+    )
+    dnds_low_coverage = dnds_diag["orthologs_total"] > 0 and len(dnds_values) < max(3, len(valid))
+    dnds_degenerate_low = bool(
+        dnds_values
+        and median(dnds_values) < 0.05
+        and dnds_coverage_fraction < 0.25
+    )
+    dnds_degraded = bool(
+        (dnds_values and dnds_saturation_fraction > 0.5)
+        or dnds_low_coverage
+        or dnds_degenerate_low
+    )
+    if dnds_saturation_fraction > 0.5:
+        unusable_reason = "Most computable dN/dS values are pinned near 1.0."
+    elif dnds_low_coverage:
+        unusable_reason = "Too few orthologs have computable dN/dS for this set."
+    elif dnds_degenerate_low:
+        unusable_reason = "dN/dS values are degenerate-low with poor coverage."
+    else:
+        unusable_reason = ""
     return {
         "valid_gene_count": len(valid),
         "missing_genes": [g for g in genes if g not in valid],
@@ -495,6 +539,12 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
         "dnds_max": max(dnds_values) if dnds_values else None,
         "dnds_saturation_fraction": dnds_saturation_fraction,
         "dnds_saturation_flag": bool(dnds_values and dnds_saturation_fraction > 0.5),
+        "dnds_coverage_fraction": dnds_coverage_fraction,
+        "dnds_low_coverage": dnds_low_coverage,
+        "dnds_degenerate_low": dnds_degenerate_low,
+        "dnds_degraded": dnds_degraded,
+        "dnds_usable": not dnds_degraded,
+        "dnds_unusable_reason": unusable_reason,
         "dnds_diagnostics": dnds_diag,
         "omega_foreground_n": len(omega_values),
         "omega_foreground_mean": mean(omega_values) if omega_values else None,
@@ -509,24 +559,51 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
     }
 
 
-def _combine_saturation_flags(*stats: dict | None) -> dict:
-    saturated = [s for s in stats if s and s.get("dnds_saturation_flag")]
+def _set_usability(set_a_stats: dict | None, set_b_stats: dict | None) -> dict:
+    stats = [("set_a", set_a_stats), ("set_b", set_b_stats)]
+    degraded = [
+        {"set": name, "reason": s.get("dnds_unusable_reason") or "dN/dS set is degraded"}
+        for name, s in stats
+        if s and s.get("dnds_degraded")
+    ]
     fractions = [
         float(s.get("dnds_saturation_fraction", 0.0))
-        for s in stats
+        for _, s in stats
         if s and s.get("dnds_n", 0)
     ]
     max_fraction = max(fractions) if fractions else 0.0
+    reason = "; ".join(f"{d['set']}: {d['reason']}" for d in degraded)
     return {
-        "flag": bool(saturated),
+        "flag": bool(degraded),
         "max_fraction": max_fraction,
         "threshold": 0.5,
-        "reason": "Most usable dN/dS values are pinned near 1.0; treat genomic axis as low-confidence/untestable."
-        if saturated else "",
+        "reason": reason,
+        "sets": {
+            name: {
+                "usable": bool(s and not s.get("dnds_degraded")),
+                "reason": (s or {}).get("dnds_unusable_reason", ""),
+                "dnds_n": (s or {}).get("dnds_n", 0),
+                "dnds_saturation_fraction": (s or {}).get("dnds_saturation_fraction", 0.0),
+            }
+            for name, s in stats
+        },
+        "cross_set_allowed": not degraded,
     }
 
 
-def _cross_set_analysis(set_a: list[str], set_b: list[str], gene_data: dict) -> dict:
+def _combine_saturation_flags(*stats: dict | None) -> dict:
+    first = stats[0] if len(stats) > 0 else None
+    second = stats[1] if len(stats) > 1 else None
+    return _set_usability(first, second)
+
+
+def _cross_set_analysis(set_a: list[str], set_b: list[str], gene_data: dict, usability: dict | None = None) -> dict:
+    if usability and not usability.get("cross_set_allowed", True):
+        return {
+            "skipped": True,
+            "skip_reason": usability.get("reason") or "one or more sets have degraded dN/dS data",
+        }
+
     def _tfs(genes: list[str]) -> set:
         tfs = set()
         for g in genes:

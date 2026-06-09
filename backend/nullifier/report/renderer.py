@@ -126,6 +126,9 @@ def render_report(formalized: dict, evidence: dict, verdict: dict, analyst_resul
     score_table.add_column("Score")
     score_table.add_column("Visual", width=22)
     for cat, score in verdict.get("scores", {}).items():
+        if score is None:
+            score_table.add_row(cat.replace("_", " ").title(), "N/A", "[dim]-[/dim]")
+            continue
         score = int(score)
         bar = "█" * score + "░" * (10 - score)
         color = "red" if score <= 3 else "yellow" if score <= 6 else "green"

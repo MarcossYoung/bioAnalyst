@@ -1,8 +1,39 @@
-# Nullifier v6
+# Nullifier
 
 A multi-agent scientific hypothesis stress-tester. Takes a research proposal, extracts falsifiable claims, retrieves evidence from four federated literature databases, runs deterministic statistical tests against gene-set data, and delivers a structured verdict with scores, critique panels, and experiment recommendations.
 
 Available as a **web UI** (FastAPI + React) or a **CLI** (Rich terminal output).
+
+## Quick Start
+
+**Requires Python 3.11+, Node.js 18+, and an Anthropic API key.**
+
+```powershell
+# From the repo root
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+Copy-Item .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY
+
+cd frontend
+npm install
+npm run build
+cd ..
+
+$env:PYTHONPATH="backend"
+python -m nullifier.cli serve
+```
+
+Then open **http://127.0.0.1:8000**.
+
+For a CLI smoke test:
+
+```powershell
+$env:PYTHONPATH="backend"
+python -m nullifier.cli run --input examples/synapse_bbb.txt --max-papers 3
+```
 
 ## How It Works
 
@@ -48,11 +79,11 @@ npm run build   # outputs to backend/nullifier/static/
 cd ..
 ```
 
-### R seqinr for Pairwise dN/dS, PAML for Branch-Model Omega
+### R/seqinr for Pairwise dN/dS, Optional PAML for Branch-Model Omega
 
-v7.6 computes pairwise dN/dS with R `seqinr::kaks` from Ensembl Compara aligned CDS. This is the primary evolutionary-rate source used for set-level `dnds_mean` and Spearman/other statistical tests. It does not require `codeml`.
+Current builds compute pairwise dN/dS with R `seqinr::kaks` from Ensembl Compara aligned CDS. This is the primary evolutionary-rate source used for set-level `dnds_mean` and Spearman/other statistical tests. It does not require `codeml`.
 
-v7.5+ can also compute lineage-specific branch-model omega via PAML `codeml` when installed. That path is secondary and degrades gracefully when `codeml` is unavailable.
+The app can also compute lineage-specific branch-model omega via PAML `codeml` when installed. That path is secondary and degrades gracefully when `codeml` is unavailable.
 
 Install R 4.0+:
 
@@ -72,13 +103,7 @@ Install required R packages once:
 install.packages(c("ape", "phangorn", "seqinr", "caper"))
 ```
 
-Install Python R bindings:
-
-```bash
-pip install rpy2
-```
-
-Set `[r].r_home` in `~/.nullifier/config.toml` if R is installed in a non-standard location.
+The Python bridge shells out to `Rscript`; no Python R binding such as `rpy2` is needed. Make sure `Rscript` is on `PATH`, or set `[r].r_home` in `~/.nullifier/config.toml` if R is installed in a non-standard location.
 
 #### Optional: Installing codeml (PAML)
 
@@ -96,17 +121,19 @@ The startup health endpoint reports missing R packages and whether `codeml` is o
 
 ### API Keys
 
-```bash
+```dotenv
 # Required
-export ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=sk-ant-...
 
 # Optional — improves Semantic Scholar rate limits
-export SEMANTIC_SCHOLAR_API_KEY=your-key
+SEMANTIC_SCHOLAR_API_KEY=your-key
 ```
+
+You can put these values in `.env`; the backend loads it automatically.
 
 ### Local LLM
 
-Install [LM Studio](https://lmstudio.ai) and load a Gemma model (e.g. `google/gemma-3n-e4b`). The default routing uses the local model for high-volume per-paper classification, gene-set scoring, and robustness reading. If LM Studio is unavailable, tasks still routed to `local` can fail; gene-set scoring has a heuristic fallback, but per-paper classification does not automatically reroute to Claude.
+Install [LM Studio](https://lmstudio.ai) and load a Gemma model (the default config uses `google/gemma-4-e4b`). The default routing uses the local model for high-volume per-paper classification, gene-set scoring, and robustness reading. If LM Studio is unavailable, tasks still routed to `local` can fail; gene-set scoring has a heuristic fallback, but per-paper classification does not automatically reroute to Claude.
 
 Check the loaded model ID via LM Studio's `/api/health` endpoint and set `backends.local.model` in your config to match exactly.
 
@@ -118,16 +145,22 @@ On first run, a config file is created at `~/.nullifier/config.toml`. Edit it to
 
 ```toml
 [backends.claude]
+provider = "anthropic"
 model = "claude-sonnet-4-20250514"
 
 [backends.local]
+provider = "openai_compatible"
 endpoint = "http://127.0.0.1:1234/v1"
-model = "google/gemma-3n-e4b"   # must match the model id loaded in LM Studio
+model = "google/gemma-4-e4b"    # must match the model id loaded in LM Studio
+api_key = "lm-studio"
+parallel_requests = 2
+request_timeout_seconds = 300
 
 [routing]
 librarian_per_paper   = "local"   # high-volume — local is ~10× cheaper
 gene_set_classifier   = "local"   # v6: Gemma scores gene-set relevance
 robustness_reading    = "local"   # v6: per-perturbation verdict reading
+provenance_enrichment = "local"   # v6: provenance metadata enrichment
 formalizer_stage1     = "claude"
 methodologist         = "claude"  # v6: picks statistical tests
 interpreter           = "claude"  # v6: reads compute results
@@ -135,8 +168,10 @@ skeptic               = "claude"
 # ... (see backend/nullifier/config/default_config.toml for full table)
 
 [compute]
-alpha              = 0.05
-default_correction = "benjamini_hochberg"
+alpha               = 0.05
+default_correction  = "benjamini_hochberg"
+bootstrap_iters     = 5000
+permutation_iters   = 10000
 ```
 
 ## Web UI

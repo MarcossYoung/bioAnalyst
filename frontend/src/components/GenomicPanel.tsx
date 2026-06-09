@@ -52,12 +52,12 @@ function SetStats({ stats }: { stats: AnalystSetStats }) {
   const sourceCounts = diag?.dnds_source_counts ?? {}
   const sourceLabel = Object.entries(sourceCounts)
     .filter(([, n]) => n > 0)
-    .map(([source, n]) => `${source === 'r_seqinr_kaks' ? 'R seqinr' : 'Ensembl'} ${n}`)
+    .map(([source, n]) => `${source === 'homology_pal2nal_ng86' ? 'homology NG86' : source === 'ensembl_compara_dn_ds' ? 'Ensembl dn_ds' : source} ${n}`)
     .join(', ')
   const dndsMissingNote = diag && stats.dnds_n === 0
     ? diag.orthologs_total === 0
       ? 'no orthologs returned'
-      : `0/${diag.orthologs_total} orthologs had usable dN/dS from Ensembl or R seqinr`
+      : `0/${diag.orthologs_total} orthologs had usable dN/dS from homology pal2nal + NG86`
     : null
   const num = (n: number | null | undefined, d = 1) => (typeof n === 'number' ? n.toFixed(d) : '—')
   return (
@@ -75,11 +75,12 @@ function SetStats({ stats }: { stats: AnalystSetStats }) {
       <span>foreground ω: {stats.omega_foreground_n && typeof stats.omega_foreground_mean === 'number' ? stats.omega_foreground_mean.toFixed(3) : 'n/a'}{stats.foreground_label ? ` (${stats.foreground_label})` : ''}</span>
       <span>acceleration ratio: {stats.acceleration_ratio_n && typeof stats.acceleration_ratio_mean === 'number' ? stats.acceleration_ratio_mean.toFixed(2) : 'n/a'}</span>
       {diag && (
-        <span title={`missing dn: ${diag.orthologs_missing_dn}; missing ds: ${diag.orthologs_missing_ds}; invalid ds: ${diag.orthologs_invalid_ds}; filtered high: ${diag.orthologs_filtered_high}`}>
+        <span title={`not computable: ${diag.orthologs_without_computable_dnds ?? 0}; filtered high: ${diag.orthologs_filtered_high}`}>
           dN/dS coverage: {diag.genes_with_dnds}/{stats.valid_gene_count} genes, {diag.orthologs_with_dnds}/{diag.orthologs_total} orthologs
         </span>
       )}
-      {dndsMissingNote && <span>{dndsMissingNote}; pairwise dN/dS uses R seqinr when Compara alignments are available, while branch-model ω remains the secondary PAML path.</span>}
+      {stats.dnds_degraded && stats.dnds_unusable_reason && <span>{stats.dnds_unusable_reason}</span>}
+      {dndsMissingNote && <span>{dndsMissingNote}; pairwise dN/dS uses homology pal2nal + NG86, while branch-model omega remains the secondary PAML path.</span>}
     </div>
   )
 }

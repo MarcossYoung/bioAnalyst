@@ -145,7 +145,7 @@ def _build_user_prompt(
         "data_shape": (
             "groups: {<group>: {<metric>: [values]}} "
             "— names: starter, expanded.<set>, controls.<set>; "
-            "Evolutionary metrics: dnds (pairwise dN/dS from R seqinr when Compara alignments exist, Ensembl fallback), "
+            "Evolutionary metrics: dnds (pairwise dN/dS from homology pal2nal + NG86 when CDS/alignment gates pass), "
             "ortholog_count, paralog_count, duplication_count, regulatory_feature_count. "
             "For coordinated-rate hypotheses, prefer spearman/pearson over variable dnds and another aligned variable when n permits. "
             "PAML metrics when available: omega_foreground, omega_background, acceleration_ratio. "
