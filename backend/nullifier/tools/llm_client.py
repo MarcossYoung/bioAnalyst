@@ -3,6 +3,7 @@ import json
 import re
 import sys
 import time
+import threading
 import requests
 from dotenv import load_dotenv; load_dotenv()
 from dataclasses import dataclass, field
@@ -66,16 +67,19 @@ class TokenTracker:
     local_output: int = 0
     calls_claude: int = 0
     calls_local: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add_claude(self, usage):
-        self.claude_input += usage.input_tokens
-        self.claude_output += usage.output_tokens
-        self.calls_claude += 1
+        with self._lock:
+            self.claude_input += usage.input_tokens
+            self.claude_output += usage.output_tokens
+            self.calls_claude += 1
 
     def add_local(self, prompt_tokens: int, completion_tokens: int):
-        self.local_input += prompt_tokens
-        self.local_output += completion_tokens
-        self.calls_local += 1
+        with self._lock:
+            self.local_input += prompt_tokens
+            self.local_output += completion_tokens
+            self.calls_local += 1
 
     def cost_estimate(self) -> float:
         # Sonnet 4 pricing (approximate); local is free
