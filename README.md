@@ -43,7 +43,7 @@ Six stages run in sequence:
 
 2. **Librarian** — For each atomic claim, generates 5–8 query variants, searches four literature sources in parallel, deduplicates, and classifies each paper as `supports / contradicts / tangential / confounder`. Every classification requires a verbatim abstract quote.
 
-3. **Analyst** *(when starter entities are provided)* — Expands the hypothesis gene list against canonical SynGO and BBB gene sets (scored for relevance by a local Gemma classifier, with a heuristic fallback for set relevance). Fetches Ensembl genomic data for each gene (orthologs, dN/dS, regulatory features, motif overlap).
+3. **Analyst** _(when starter entities are provided)_ — Expands the hypothesis gene list against canonical SynGO and BBB gene sets (scored for relevance by a local Gemma classifier, with a heuristic fallback for set relevance). Fetches Ensembl genomic data for each gene (orthologs, dN/dS, regulatory features, motif overlap).
 
 4. **Methodologist** — Reads the expanded gene-set data and selects an appropriate statistical test plan: which tests to run, which correction method to apply, which genes form each group.
 
@@ -55,12 +55,12 @@ Per-paper classification and gene-set relevance scoring use a local LLM (LM Stud
 
 ## Literature Sources
 
-| Source | Coverage |
-|--------|----------|
-| Semantic Scholar | General scientific literature, citation graph |
-| OpenAlex | Open access, broad coverage |
-| Europe PMC | Life sciences, full-text indexed |
-| bioRxiv / medRxiv | Preprints (via Europe PMC `SRC:PPR`) |
+| Source            | Coverage                                      |
+| ----------------- | --------------------------------------------- |
+| Semantic Scholar  | General scientific literature, citation graph |
+| OpenAlex          | Open access, broad coverage                   |
+| Europe PMC        | Life sciences, full-text indexed              |
+| bioRxiv / medRxiv | Preprints (via Europe PMC `SRC:PPR`)          |
 
 Sources are queried in parallel. If any source is unavailable, the run continues with the remaining ones (circuit breaker per host).
 
@@ -227,13 +227,44 @@ python -m nullifier.cli review out.json
 python -m nullifier.cli flags list
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--input` | required | Path to hypothesis text file |
-| `--output-json` | none | Save full report JSON for later review |
-| `--max-papers` | 6 | Max papers retrieved per atomic claim in CLI runs; web/API default is 12 |
-| `--no-confirm` | off | Skip the confirmation gate |
-| `--debug` | off | Print raw event stream alongside output |
+| Flag            | Default  | Description                                                              |
+| --------------- | -------- | ------------------------------------------------------------------------ |
+| `--input`       | required | Path to hypothesis text file                                             |
+| `--output-json` | none     | Save full report JSON for later review                                   |
+| `--max-papers`  | 6        | Max papers retrieved per atomic claim in CLI runs; web/API default is 12 |
+| `--no-confirm`  | off      | Skip the confirmation gate                                               |
+| `--debug`       | off      | Print raw event stream alongside output                                  |
+
+### Exporting the Last Run
+
+Runs are stored in SQLite at `~/.nullifier/runs.db`. To export the latest run
+as a self-contained JSON file, run this from the repo root:
+
+```powershell
+python scripts/export_last_run.py
+```
+
+The script writes a file next to the database, for example:
+
+```text
+C:\Users\Your Name\.nullifier\run_20260608T124534_8c296d26_export.json
+```
+
+To export a specific run or write to another directory:
+
+```powershell
+python scripts/export_last_run.py --run-id 8c296d26
+python scripts/export_last_run.py --output-dir exports
+python scripts/export_last_run.py --db "C:\Users\Your Name\.nullifier\runs.db"
+```
+
+| Flag            | Default  | Description                                                              |
+| --------------- | -------- | ------------------------------------------------------------------------ |
+| `--input`       | required | Path to hypothesis text file                                             |
+| `--output-json` | none     | Save full report JSON for later review                                   |
+| `--max-papers`  | 6        | Max papers retrieved per atomic claim in CLI runs; web/API default is 12 |
+| `--no-confirm`  | off      | Skip the confirmation gate                                               |
+| `--debug`       | off      | Print raw event stream alongside output                                  |
 
 ## Writing a Good Input File
 
@@ -293,13 +324,13 @@ The FastAPI server serves the built SPA from `backend/nullifier/static/`: `/asse
 
 ## Verdicts
 
-| Verdict | Meaning |
-|---------|---------|
-| `STRONG` | Multiple independent supporting lines; no credible contradictions |
-| `MODERATE` | Net support but meaningful uncertainty or gaps |
-| `WEAK` | Contradicted, methodologically limited, or very sparse evidence |
-| `FALSIFIED` | Direct contradicting evidence; hypothesis as stated is untenable |
-| `NOVEL-UNTESTED` | No prior literature found; hypothesis is uninvestigated, not disproven |
+| Verdict               | Meaning                                                                                                                          |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `STRONG`              | Multiple independent supporting lines; no credible contradictions                                                                |
+| `MODERATE`            | Net support but meaningful uncertainty or gaps                                                                                   |
+| `WEAK`                | Contradicted, methodologically limited, or very sparse evidence                                                                  |
+| `FALSIFIED`           | Direct contradicting evidence; hypothesis as stated is untenable                                                                 |
+| `NOVEL-UNTESTED`      | No prior literature found; hypothesis is uninvestigated, not disproven                                                           |
 | `RESULTS-PROBLEMATIC` | Input included completed analyses; Skeptic found HIGH-severity issues in methods, statistics, reproducibility, or interpretation |
 
 When `RESULTS-PROBLEMATIC` is issued, the UI renders two verdict cards side-by-side: the left card shows the underlying hypothesis verdict (derived from the falsifiability score); the right card shows the critique breakdown.
@@ -308,12 +339,12 @@ When `RESULTS-PROBLEMATIC` is issued, the UI renders two verdict cards side-by-s
 
 Typical run on a 2–3 claim hypothesis with LM Studio running:
 
-| Component | Approximate cost |
-|-----------|-----------------|
-| Claude calls (formalize, synthesize, methodologist, interpreter, skeptic) | $0.08–0.18 |
-| Local LLM (per-paper classification, gene-set scoring, robustness reading) | ~$0 |
-| Ensembl lookups | free (cached after first run) |
-| **Total** | **~$0.08–0.20** |
+| Component                                                                  | Approximate cost              |
+| -------------------------------------------------------------------------- | ----------------------------- |
+| Claude calls (formalize, synthesize, methodologist, interpreter, skeptic)  | $0.08–0.18                    |
+| Local LLM (per-paper classification, gene-set scoring, robustness reading) | ~$0                           |
+| Ensembl lookups                                                            | free (cached after first run) |
+| **Total**                                                                  | **~$0.08–0.20**               |
 
 If you reroute all local tasks to Claude, expect roughly ~$0.25–0.60 per run.
 
