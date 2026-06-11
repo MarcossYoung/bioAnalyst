@@ -1,6 +1,7 @@
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from ..config.loader import load_config
 from ..tools.llm_client import llm_call_json, llm_call_json_batch
 from ..tools.literature import federated_search, find_by_title, citation_similarity, SourceHealth
 from ..tools.query_expander import expand_queries
@@ -16,7 +17,7 @@ from .semantic import (
 )
 
 
-_PER_CLAIM_SEARCH_BUDGET = 45.0
+_PER_CLAIM_SEARCH_BUDGET = 30.0
 _CLASSIFIER_DEGRADED_THRESHOLD = 0.5
 _CITATION_MATCH_THRESHOLD = 0.35
 
@@ -78,6 +79,11 @@ LIBRARIAN_SYNTHESIS_SPEC = AgentSpec(
 
 
 def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event=None) -> dict:
+    budget = float(
+        load_config().get("literature", {}).get(
+            "per_claim_search_budget_seconds", _PER_CLAIM_SEARCH_BUDGET
+        )
+    )
     relevant_flags = get_relevant_flags(
         formalized.get("core_hypothesis", ""),
         formalized.get("domain", "unknown"),
@@ -140,7 +146,7 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
                     for qv in expanded
                 }
                 for fut in as_completed(fut_to_qv):
-                    if time.monotonic() - t0 > _PER_CLAIM_SEARCH_BUDGET:
+                    if time.monotonic() - t0 > budget:
                         for f in fut_to_qv:
                             f.cancel()
                         break

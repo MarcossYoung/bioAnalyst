@@ -1,3 +1,4 @@
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Generator
 
 from . import events as ev
@@ -31,6 +32,8 @@ def run_pipeline(
     def _cancelled() -> bool:
         return cancel_check is not None and cancel_check()
 
+    lib_executor: ThreadPoolExecutor | None = None
+    lib_future: Future[dict] | None = None
     try:
         yield ev.run_started()
 
@@ -73,18 +76,15 @@ def run_pipeline(
             yield ev.run_aborted()
             return
         n_claims = len(formalized.get("atomic_claims", []))
-        yield ev.stage_started("librarian", f"Retrieving evidence ({n_claims} claim(s))")
-
         lib_events: list[ev.Event] = []
-        evidence = retrieve_evidence(
+        lib_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="librarian")
+        lib_future = lib_executor.submit(
+            retrieve_evidence,
             formalized,
             max_papers_per_claim=max_papers,
             on_event=lib_events.append,
         )
-        for e in lib_events:
-            yield e
-        yield ev.token_update(TRACKER)
-        yield ev.stage_completed("librarian")
+        yield ev.stage_started("librarian", f"Retrieving evidence ({n_claims} claim(s))")
 
         # ── v6 Analyst stage: expand → fetch → methodologist → compute → interpret ──
         if _cancelled():
@@ -195,6 +195,12 @@ def run_pipeline(
                 yield ev.token_update(TRACKER)
                 yield ev.stage_completed("analyst")
 
+        evidence = lib_future.result()
+        for e in lib_events:
+            yield e
+        yield ev.token_update(TRACKER)
+        yield ev.stage_completed("librarian")
+
         # ── Skeptic ──────────────────────────────────────────────────────────
         if _cancelled():
             yield ev.run_aborted()
@@ -212,3 +218,6 @@ def run_pipeline(
 
     except Exception as e:
         yield ev.run_failed(str(e))
+    finally:
+        if lib_executor is not None:
+            lib_executor.shutdown(wait=True)
