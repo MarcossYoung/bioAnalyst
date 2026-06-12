@@ -287,6 +287,7 @@ def fetch_orthologs_by_id_batch(
     target_taxon: int = 40674,
     use_cache: bool = True,
     batch_size: int | None = None,
+    fmt: str = "full",
     on_progress=None,
 ) -> dict[str, list[dict]]:
     """Batch POST /homology/id for multiple Ensembl IDs."""
@@ -300,7 +301,7 @@ def fetch_orthologs_by_id_batch(
         data = _post(
             "/homology/id",
             {"ids": chunk},
-            {"type": "orthologues", "target_taxon": target_taxon, "format": "full"},
+            {"type": "orthologues", "target_taxon": target_taxon, "format": fmt},
             use_cache,
         )
         entries = data.get("data", []) if isinstance(data, dict) else []
@@ -347,6 +348,51 @@ def _parse_ortholog(h: dict) -> dict:
     }
     if dnds is not None:
         out["dnds_source"] = "ensembl_compara_dn_ds"
+    return out
+
+
+def screen_panel_coverage_by_id_batch(
+    ensembl_ids: list[str],
+    panel: list[str],
+    use_cache: bool = True,
+    batch_size: int | None = None,
+) -> dict[str, dict]:
+    """Cheap batch screen for whether genes have orthologs in panel species.
+
+    Uses the condensed homology format, so this avoids alignment payloads. The
+    result is intentionally coarse: downstream code still applies the precise
+    one-to-one ortholog filter before rate-vector analyses.
+    """
+    ids = [x for x in dict.fromkeys(ensembl_ids or []) if x]
+    if not ids:
+        return {}
+    panel_set = {str(s).lower() for s in (panel or []) if s}
+    out: dict[str, dict] = {
+        ensg: {"species_count": 0, "panel_species": set()}
+        for ensg in ids
+    }
+    try:
+        homologies_by_id = fetch_orthologs_by_id_batch(
+            ids,
+            use_cache=use_cache,
+            batch_size=batch_size,
+            fmt="condensed",
+        )
+    except Exception as e:
+        print(f"[ensembl] panel coverage screen failed: {e}", file=sys.stderr)
+        return out
+
+    for ensg, homologies in homologies_by_id.items():
+        species = {
+            str(h.get("target_species") or "").lower()
+            for h in (homologies or [])
+            if h.get("target_species")
+        }
+        panel_species = species & panel_set
+        out[ensg] = {
+            "species_count": len(panel_species),
+            "panel_species": panel_species,
+        }
     return out
 
 

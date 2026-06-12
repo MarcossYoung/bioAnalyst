@@ -767,7 +767,9 @@ def mirrortree_lite(rate_vectors: dict, inputs: dict | None = None) -> dict:
     ]
     if degraded:
         reason = "; ".join(
-            f"{name}: {meta.get('reason') or 'degraded dN/dS coverage'}"
+            f"set {name} degraded: too few genes survive FP-risk filter"
+            if meta.get("risk_degraded")
+            else f"{name}: {meta.get('reason') or 'degraded dN/dS coverage'}"
             for name, meta in degraded
         )
         return _test_result(
@@ -969,6 +971,14 @@ def _data_summary(data: dict) -> dict:
                 if c.get("usable_rates", 0) > 0
             ),
         }
+        if rate_vectors.get("risk_filter"):
+            out["rate_vectors"]["risk_filter"] = {
+                "calibration_state": (rate_vectors.get("risk_filter") or {}).get("calibration_state"),
+                "min_low_risk_genes": (rate_vectors.get("risk_filter") or {}).get("min_low_risk_genes"),
+                "flagged_genes": (rate_vectors.get("risk_filter") or {}).get("flagged_genes", []),
+                "excluded_genes": (rate_vectors.get("risk_filter") or {}).get("excluded_genes", []),
+                "sets": (rate_vectors.get("risk_filter") or {}).get("sets", {}),
+            }
     gnomad_prov = (data.get("provenance") or {}).get("gnomad")
     if gnomad_prov:
         out["gnomad_coverage"] = gnomad_prov
@@ -1143,7 +1153,8 @@ def _qualitative(test_result: dict) -> tuple:
 
 def leave_one_out(starter_genes: list[str], primary_tests: list[dict],
                   rebuild_data: Callable[[set], dict],
-                  thresholds: dict | None = None) -> dict:
+                  thresholds: dict | None = None,
+                  flagged_genes: list[str] | None = None) -> dict:
     """For each starter gene, drop it, re-run the primary tests, and check whether
     the qualitative outcome (significant?, direction) still matches the full-set run.
 
@@ -1185,6 +1196,7 @@ def leave_one_out(starter_genes: list[str], primary_tests: list[dict],
         influence[g] = len(primary_tests) - n_match
         perturbations.append({
             "dropped_gene": g,
+            "perturbation": "leave_one_out",
             "all_match": bool(all_match),
             "match_fraction": round(n_match / len(primary_tests), 4),
             "per_test": [{"test": primary_tests[i]["test"],
@@ -1196,6 +1208,25 @@ def leave_one_out(starter_genes: list[str], primary_tests: list[dict],
     stability = ("stable" if agreement_fraction >= thresholds["stable"]
                  else "sensitive" if agreement_fraction >= thresholds["sensitive"]
                  else "fragile")
+    medium_risk_perturbation = None
+    flagged = [g for g in dict.fromkeys(flagged_genes or []) if g in set(starter_genes)]
+    if flagged:
+        data_flagged = rebuild_data(set(flagged))
+        res_flagged = [_run_one(t["test"], t.get("inputs", {}), data_flagged) for t in primary_tests]
+        story_flagged = [_qualitative(r) for r in res_flagged]
+        matches = [story_flagged[i] == full_story[i] for i in range(len(primary_tests))]
+        n_match = sum(1 for m in matches if m)
+        medium_risk_perturbation = {
+            "perturbation": "drop_medium_risk_genes",
+            "dropped_genes": flagged,
+            "all_match": bool(all(matches)),
+            "match_fraction": round(n_match / len(primary_tests), 4),
+            "per_test": [{"test": primary_tests[i]["test"],
+                          "full": {"significant": full_story[i][0], "sign": full_story[i][1]},
+                          "without_medium_risk_genes": {"significant": story_flagged[i][0], "sign": story_flagged[i][1]},
+                          "matched": bool(matches[i])} for i in range(len(primary_tests))],
+        }
+        perturbations.append(medium_risk_perturbation)
     most_influential = sorted([g for g, c in influence.items() if c > 0],
                               key=lambda g: -influence[g])
     return {
@@ -1206,6 +1237,8 @@ def leave_one_out(starter_genes: list[str], primary_tests: list[dict],
         "perturbations": perturbations,
         "agreement_fraction": agreement_fraction,
         "stability": stability,
+        "medium_risk_perturbation": medium_risk_perturbation,
+        "medium_risk_stable": None if medium_risk_perturbation is None else medium_risk_perturbation["all_match"],
         "thresholds": thresholds,
         "most_influential_genes": most_influential,
     }

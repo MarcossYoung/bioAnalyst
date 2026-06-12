@@ -1,4 +1,5 @@
 from ..tools.llm_client import llm_call_json
+from ..tools.diagnostics import FP_RISK_DISCLAIMER
 from .semantic import (
     AgentSpec,
     OutputContract,
@@ -180,6 +181,11 @@ def _apply_guardrails(verdict: dict, evidence: dict, analyst_result: dict | None
     analyst_compute = (analyst_result or {}).get("compute_results") or {}
     analyst_interp = (analyst_result or {}).get("interpretation") or {}
     tests = analyst_compute.get("tests") or []
+    dnds_saturation = ((analyst_result or {}).get("dnds_saturation") or {})
+    risk_gate_active = any(
+        bool((s or {}).get("risk_degraded"))
+        for s in ((dnds_saturation.get("sets") or {}).values())
+    )
     genomic_test_ran = any(
         isinstance(t, dict)
         and t.get("test") != "untestable"
@@ -193,12 +199,17 @@ def _apply_guardrails(verdict: dict, evidence: dict, analyst_result: dict | None
         or not analyst_result
         or analyst_compute.get("untestable")
         or analyst_interp.get("overall_genomic_assessment") == "untestable"
-        or ((analyst_result or {}).get("dnds_saturation") or {}).get("flag")
+        or dnds_saturation.get("flag")
     )
     if genomic_not_scored:
         scores["genomic_evidence_alignment"] = None
         out["scores"] = scores
-        note = "No genomic test was run; genomic axis not scored."
+        if risk_gate_active:
+            note = "Risk filter left too few scorable genes; genomic axis not scored."
+        elif dnds_saturation.get("flag"):
+            note = "dN/dS saturation or coverage degradation made genomic evidence untestable; genomic axis not scored."
+        else:
+            note = "No genomic test was run; genomic axis not scored."
         out["verdict_justification"] = _append_note(out.get("verdict_justification", ""), note)
     if evidence.get("classifier_degraded"):
         out["librarian_sanity_check"] = _append_note(
@@ -258,6 +269,11 @@ def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
         reason = interp.get("assessment_justification") or (analyst_result.get("compute_results") or {}).get("untestable_reason", "")
         if not reason:
             reason = (analyst_result.get("dnds_saturation") or {}).get("reason", "")
+        if any(
+            bool((s or {}).get("risk_degraded"))
+            for s in (((analyst_result.get("dnds_saturation") or {}).get("sets") or {}).values())
+        ):
+            reason = "risk filter left too few scorable genes"
         return (
             "\nGENOMIC EVIDENCE: Untestable/low-confidence by guardrail - "
             "report genomic_evidence_alignment as N/A; do not score.\n"
@@ -270,6 +286,7 @@ def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
 
     lines = ["\nGENOMIC EVIDENCE (Analyst):"]
     lines.append(f"  {SKEPTIC_DNDS_LIMITATION}")
+    lines.append(f"  {FP_RISK_DISCLAIMER}")
     lines.append(f"  Overall genomic assessment: {interp.get('overall_genomic_assessment', '?')}")
     lines.append(f"  Justification: {interp.get('assessment_justification', '')}")
 

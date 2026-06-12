@@ -41,6 +41,11 @@ cache_path = "~/.nullifier/ensembl_cache.db"
 batch_size = 1000
 max_genes_for_full_analysis = 500
 
+[analyst]
+comparability_screen = true
+min_panel_species = 6
+min_low_risk_genes = 2
+
 [r]
 enabled = true
 r_home = ""  # auto-detect if empty; set manually if R is in a non-standard location

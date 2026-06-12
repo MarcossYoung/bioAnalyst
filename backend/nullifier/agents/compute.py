@@ -42,7 +42,13 @@ def run_compute(
 
     primary = plan.get("primary_tests") or []
     _emit(ev.compute_robustness_start(len(starter_entities)))
-    robustness = leave_one_out(starter_entities, primary, rebuild_data=rebuild_data)
+    risk_filter = ((data or {}).get("rate_vectors") or {}).get("risk_filter") or {}
+    robustness = leave_one_out(
+        starter_entities,
+        primary,
+        rebuild_data=rebuild_data,
+        flagged_genes=risk_filter.get("flagged_genes") or [],
+    )
     _emit(ev.compute_robustness_complete(
         robustness.get("stability", "unknown"),
         robustness.get("agreement_fraction", 0.0),

@@ -33,10 +33,14 @@ const SectionLabel = ({ children }: { children: React.ReactNode }) => (
   </div>
 )
 
-const Chip = ({ children, scheme = 'blue' }: { children: React.ReactNode; scheme?: 'blue' | 'cyan' }) => {
+const Chip = ({ children, scheme = 'blue' }: { children: React.ReactNode; scheme?: 'blue' | 'cyan' | 'amber' | 'red' }) => {
   const c = scheme === 'cyan'
     ? { background: '#ecfeff', border: '1px solid #a5f3fc', color: '#155e75' }
-    : { background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af' }
+    : scheme === 'amber'
+      ? { background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e' }
+      : scheme === 'red'
+        ? { background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b' }
+        : { background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af' }
   return (
     <span style={{
       ...c, fontSize: '11px', fontFamily: 'ui-monospace, Consolas, monospace',
@@ -91,6 +95,10 @@ export function GenomicPanel({ analyst }: GenomicPanelProps) {
   const color = ASSESS_COLOR[assessment] ?? 'var(--verdict-moderate)'
   const jaccard = analyst.cross_set?.jaccard_index ?? interp?.regulatory_overlap?.jaccard_index ?? null
   const sharedTfs = analyst.cross_set?.shared_tfs ?? interp?.regulatory_overlap?.shared_tf_motifs ?? []
+  const risk = analyst.risk_filter
+  const riskDisclaimer = risk?.disclaimer ?? analyst.data_provenance?.fp_risk?.disclaimer
+  const flaggedGenes = risk?.flagged_genes ?? analyst.data_provenance?.fp_risk?.flagged_genes ?? []
+  const excludedGenes = risk?.excluded_genes ?? analyst.data_provenance?.fp_risk?.excluded_genes ?? []
 
   const patternData = (interp?.patterns_observed ?? [])
     .filter((p): p is NonNullable<typeof p> & { pattern: string } =>
@@ -130,6 +138,31 @@ export function GenomicPanel({ analyst }: GenomicPanelProps) {
       </div>
 
       {/* Patterns observed — chart + evidence */}
+      {(riskDisclaimer || flaggedGenes.length > 0 || excludedGenes.length > 0) && (
+        <div>
+          <SectionLabel>FP-risk filter</SectionLabel>
+          {riskDisclaimer && (
+            <p style={{ margin: '0 0 8px', fontSize: '12px', color: 'var(--text-muted)' }}>
+              {riskDisclaimer}
+            </p>
+          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {flaggedGenes.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)', width: '64px' }}>Flagged</span>
+                {flaggedGenes.map((g) => <Chip key={g} scheme="amber">{g}</Chip>)}
+              </div>
+            )}
+            {excludedGenes.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)', width: '64px' }}>Excluded</span>
+                {excludedGenes.map((g) => <Chip key={g} scheme="red">{g}</Chip>)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {patternData.length > 0 && (
         <div>
           <SectionLabel>Patterns observed</SectionLabel>

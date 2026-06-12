@@ -144,6 +144,8 @@ def run_pipeline(
                         phylo_data=analyst_data["phylo_data"],
                         paml_data=analyst_data.get("paml_data"),
                         rdnds_data=analyst_data.get("rdnds_data"),
+                        diagnostics=analyst_data.get("diagnostics"),
+                        min_low_risk_genes=((analyst_data.get("risk_filter") or {}).get("min_low_risk_genes") or 2),
                     ),
                     on_event=compute_events.append,
                 )
@@ -162,6 +164,11 @@ def run_pipeline(
                 dnds_saturation = analyst_data.get("dnds_saturation") or {}
                 if dnds_saturation.get("flag"):
                     reason = dnds_saturation.get("reason")
+                    if any(
+                        bool((s or {}).get("risk_degraded"))
+                        for s in ((dnds_saturation.get("sets") or {}).values())
+                    ):
+                        reason = "risk filter left too few scorable genes"
                     interpretation = {
                         **interpretation,
                         "overall_genomic_assessment": "untestable",
@@ -189,6 +196,8 @@ def run_pipeline(
                     "dnds_saturation": analyst_data.get("dnds_saturation"),
                     "cross_set": analyst_data["cross_set"],
                     "phylo_data": analyst_data["phylo_data"],
+                    "diagnostics": analyst_data.get("diagnostics"),
+                    "risk_filter": analyst_data.get("risk_filter"),
                     "data_provenance": analyst_data["data"].get("provenance"),
                 }
 

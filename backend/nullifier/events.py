@@ -161,6 +161,15 @@ def analyst_started(gene_count: int) -> Event:
     return Event("analyst_started", {"gene_count": gene_count})
 
 
+def analyst_comparability_screen(total: int, kept: int, dropped: int, threshold: int) -> Event:
+    return Event("analyst_comparability_screen", {
+        "total": total,
+        "kept": kept,
+        "dropped": dropped,
+        "threshold": threshold,
+    })
+
+
 def analyst_gene_fetched(gene: str, status: str) -> Event:
     return Event("analyst_gene_fetched", {"gene": gene, "status": status})
 
@@ -192,6 +201,22 @@ def analyst_rdnds_complete(genes_with_dnds: int, total: int, orthologs_attached:
         "genes_with_dnds": genes_with_dnds,
         "total": total,
         "orthologs_attached": orthologs_attached,
+    })
+
+
+def diagnostics_risk_scored(gene: str, risk, tier: str, reasons: list[str]) -> Event:
+    return Event("diagnostics_risk_scored", {
+        "gene": gene,
+        "risk": risk,
+        "tier": tier,
+        "reasons": reasons or [],
+    })
+
+
+def diagnostics_risk_survival_summary(set_name: str, summary: dict) -> Event:
+    return Event("diagnostics_risk_survival_summary", {
+        "set": set_name,
+        **(summary or {}),
     })
 
 

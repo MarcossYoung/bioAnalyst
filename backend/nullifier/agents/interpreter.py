@@ -1,6 +1,7 @@
 from statistics import mean
 
 from ..tools.llm_client import llm_call_json
+from ..tools.diagnostics import FP_RISK_DISCLAIMER
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
 
@@ -63,13 +64,19 @@ def run_interpreter(
             "outlier_genes": [],
             "regulatory_overlap": {},
             "reproducibility_check": [],
-            "limitations": [reason],
+            "limitations": [reason, FP_RISK_DISCLAIMER],
             "overall_genomic_assessment": "untestable",
             "assessment_justification": reason,
             "required_construct": compute_results.get("required_construct"),
         }
     user = _build_user_prompt(formalized, expansion, compute_results, gene_data, robustness, reproducibility)
-    return llm_call_json("interpreter", INTERPRETER_SYSTEM, user, max_tokens=3500)
+    out = llm_call_json("interpreter", INTERPRETER_SYSTEM, user, max_tokens=3500)
+    if isinstance(out, dict):
+        limitations = list(out.get("limitations") or [])
+        if FP_RISK_DISCLAIMER not in limitations:
+            limitations.append(FP_RISK_DISCLAIMER)
+        out["limitations"] = limitations
+    return out
 
 
 def _build_user_prompt(
@@ -161,6 +168,18 @@ def _build_user_prompt(
             f"regulatory_features={len(reg)}, mean_dN/dS={dnds_mean}"
         )
 
+    risk_filter = (((compute_results or {}).get("data_summary") or {}).get("rate_vectors") or {}).get("risk_filter") or {}
+    risk_block = ""
+    if risk_filter:
+        risk_block = (
+            "\nFP-RISK FILTER:\n"
+            f"  calibration_state: {risk_filter.get('calibration_state', 'heuristic')}\n"
+            f"  disclaimer: {FP_RISK_DISCLAIMER}\n"
+            f"  flagged_genes: {risk_filter.get('flagged_genes', [])}\n"
+            f"  excluded_genes: {risk_filter.get('excluded_genes', [])}\n"
+            f"  set_survival: {risk_filter.get('sets', {})}\n"
+        )
+
     evidence_parts = [
         "DETERMINISTIC COMPUTE RESULTS:\n" + ("\n".join(test_lines) or "  (none)"),
         "CORRECTIONS APPLIED:\n" + ("\n".join(corr_lines) or "  (none)"),
@@ -175,6 +194,8 @@ def _build_user_prompt(
         evidence_parts.append(rb_block.strip())
     if repro_block.strip():
         evidence_parts.append(repro_block.strip())
+    if risk_block.strip():
+        evidence_parts.append(risk_block.strip())
     evidence_parts.append(
         "PER-GENE GENOMIC DATA:\n" + ("\n".join(per_gene_lines) or "  (no gene data)")
     )

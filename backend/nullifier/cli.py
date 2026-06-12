@@ -84,6 +84,11 @@ def _handle_event(event, console) -> None:
         console.print(f"  [yellow]Detected {p['finding_count']} completed-analysis finding(s) — critique mode will activate[/yellow]")
     elif t == "analyst_started":
         console.print(f"  Fetching Ensembl data for {p['gene_count']} gene(s)...")
+    elif t == "analyst_comparability_screen":
+        console.print(
+            f"  Comparability screen: {p['total']} -> {p['kept']} comparable gene(s) "
+            f"({p['dropped']} dropped below {p['threshold']}-species panel coverage)"
+        )
     elif t == "analyst_reproducibility_check_start":
         console.print(f"  Cross-referencing {p['finding_count']} reported finding(s) against Ensembl...")
     elif t == "analyst_reproducibility_check_complete":

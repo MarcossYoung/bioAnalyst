@@ -163,6 +163,18 @@ export interface AnalystSetStats {
   dnds_degraded?: boolean
   dnds_usable?: boolean
   dnds_unusable_reason?: string
+  risk_summary?: {
+    scored_count: number
+    unscored_count: number
+    survivor_count: number
+    flagged_count: number
+    excluded_count: number
+    min_survivors: number
+    risk_degraded: boolean
+    reason: string
+    flagged_genes: string[]
+    excluded_genes: string[]
+  }
   omega_foreground_n?: number
   omega_foreground_mean?: number | null
   acceleration_ratio_n?: number
@@ -246,6 +258,29 @@ export interface AnalystResult {
     max_fraction: number
     threshold: number
     reason: string
+    sets?: Record<string, {
+      usable: boolean
+      reason: string
+      dnds_degraded?: boolean
+      risk_degraded?: boolean
+      risk_summary?: AnalystSetStats['risk_summary']
+    }>
+  } | null
+  diagnostics?: Record<string, unknown> | null
+  risk_filter?: {
+    calibration_state?: string
+    disclaimer?: string
+    weights?: Record<string, number>
+    min_low_risk_genes?: number
+    flagged_genes?: string[]
+    excluded_genes?: string[]
+    genes?: Record<string, {
+      risk: number
+      tier: 'contributes' | 'flagged' | 'excluded' | string
+      reasons: string[]
+      calibration_state?: string
+    }>
+    sets?: Record<string, unknown>
   } | null
 }
 
@@ -300,6 +335,14 @@ export interface DataProvenance {
     total_genes: number
   } | null
   paml?: { source: string; genes_computed: number; total_genes: number } | null
+  fp_risk?: {
+    weights: Record<string, number>
+    calibration_state: string
+    disclaimer: string
+    flagged_genes: string[]
+    excluded_genes: string[]
+    null_result_changes_with_aligner?: string
+  } | null
 }
 
 export interface ComputeTest {

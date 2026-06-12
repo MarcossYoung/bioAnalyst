@@ -6,6 +6,15 @@ Pure helpers — no LLM, no network, no file I/O.
 from statistics import mean
 
 from .panels import mammal_panel
+from .diagnostics import (
+    FP_RISK_CALIBRATION_STATE,
+    FP_RISK_DISCLAIMER,
+    FP_RISK_WEIGHTS,
+    RISK_TIER_EXCLUDED,
+    RISK_TIER_FLAGGED,
+    diagnostics_to_dict,
+    score_record,
+)
 
 
 METRICS = ("dnds", "ortholog_count", "paralog_count", "duplication_count",
@@ -88,6 +97,8 @@ def per_gene_rate_vectors(
     expansion: dict,
     rdnds_data: dict | None = None,
     panel: list[str] | None = None,
+    diagnostics: dict | None = None,
+    min_low_risk_genes: int = 2,
 ) -> dict:
     """Build panel-aligned per-lineage dN/dS vectors for mirrortree-lite.
 
@@ -99,6 +110,15 @@ def per_gene_rate_vectors(
     panel_set = set(panel)
     rates: dict[str, list[float | None]] = {}
     coverage: dict[str, dict] = {}
+    risk_filter = {
+        "calibration_state": FP_RISK_CALIBRATION_STATE,
+        "disclaimer": FP_RISK_DISCLAIMER,
+        "weights": dict(FP_RISK_WEIGHTS),
+        "min_low_risk_genes": int(min_low_risk_genes),
+        "genes": {},
+        "flagged_genes": [],
+        "excluded_genes": [],
+    }
 
     all_genes: list[str] = []
     for pool in (
@@ -110,7 +130,29 @@ def per_gene_rate_vectors(
             if gene not in all_genes:
                 all_genes.append(gene)
 
+    excluded_by_risk: set[str] = set()
     for gene in all_genes:
+        record = (diagnostics or {}).get(gene)
+        if record is None:
+            continue
+        scored = score_record(record)
+        scored["diagnostics"] = diagnostics_to_dict(record)
+        risk_filter["genes"][gene] = scored
+        if scored["tier"] == RISK_TIER_EXCLUDED:
+            excluded_by_risk.add(gene)
+            risk_filter["excluded_genes"].append(gene)
+        elif scored["tier"] == RISK_TIER_FLAGGED:
+            risk_filter["flagged_genes"].append(gene)
+
+    for gene in all_genes:
+        if gene in excluded_by_risk:
+            coverage[gene] = {
+                "one2one_panel_species": 0,
+                "usable_rates": 0,
+                "risk_excluded": True,
+                "risk": risk_filter["genes"].get(gene),
+            }
+            continue
         record = gene_data.get(gene) or {}
         species_values = {str(k).lower(): v for k, v in ((rdnds_data or {}).get(gene) or {}).items()}
         allowed_species = _one2one_panel_species(record, panel_set)
@@ -122,6 +164,7 @@ def per_gene_rate_vectors(
         coverage[gene] = {
             "one2one_panel_species": len(allowed_species),
             "usable_rates": sum(1 for v in vector if v is not None),
+            "risk": risk_filter["genes"].get(gene),
         }
 
     sets = {"starter": list(expansion.get("starter") or [])}
@@ -130,32 +173,69 @@ def per_gene_rate_vectors(
     for name, genes in (expansion.get("background") or {}).items():
         sets[name] = list(genes)
 
+    filtered_sets = {
+        name: [g for g in genes if g not in excluded_by_risk]
+        for name, genes in sets.items()
+    }
+
     set_usability = {}
     for name, genes in sets.items():
         gene_count = len(genes)
-        genes_with_rates = sum(1 for g in genes if coverage.get(g, {}).get("usable_rates", 0) > 0)
-        usable_rates = sum(int(coverage.get(g, {}).get("usable_rates", 0)) for g in genes)
-        usable = gene_count > 0 and genes_with_rates >= min(2, gene_count) and usable_rates >= 5
+        survivors = filtered_sets.get(name) or []
+        genes_with_rates = sum(1 for g in survivors if coverage.get(g, {}).get("usable_rates", 0) > 0)
+        usable_rates = sum(int(coverage.get(g, {}).get("usable_rates", 0)) for g in survivors)
+        risk_scored = [g for g in genes if g in risk_filter["genes"]]
+        excluded_genes = [g for g in genes if g in excluded_by_risk]
+        flagged_genes = [g for g in genes if g in risk_filter["flagged_genes"]]
+        risk_degraded = bool(risk_scored and len(survivors) < int(min_low_risk_genes))
+        dnds_degraded = not (len(survivors) > 0 and genes_with_rates >= min(2, len(survivors)) and usable_rates >= 5)
+        usable = not risk_degraded and not dnds_degraded
+        reason = ""
+        if risk_degraded:
+            reason = "too few genes survive FP-risk filter"
+        elif dnds_degraded:
+            reason = "too few genes/species have computable non-saturated dN/dS rates"
         set_usability[name] = {
             "usable": usable,
-            "reason": "" if usable else "too few genes/species have computable non-saturated dN/dS rates",
+            "reason": reason,
             "gene_count": gene_count,
+            "survivor_count": len(survivors),
             "genes_with_rates": genes_with_rates,
             "usable_rates": usable_rates,
+            "dnds_degraded": dnds_degraded,
+            "risk_degraded": risk_degraded,
+            "risk_scored_count": len(risk_scored),
+            "risk_flagged_genes": flagged_genes,
+            "risk_excluded_genes": excluded_genes,
+        }
+        risk_filter.setdefault("sets", {})[name] = {
+            "gene_count": gene_count,
+            "survivor_count": len(survivors),
+            "flagged_genes": flagged_genes,
+            "excluded_genes": excluded_genes,
+            "risk_degraded": risk_degraded,
+            "min_low_risk_genes": int(min_low_risk_genes),
         }
 
     return {
         "panel": panel,
-        "gene_index": all_genes,
-        "sets": sets,
+        "gene_index": [g for g in all_genes if g not in excluded_by_risk],
+        "sets": filtered_sets,
+        "original_sets": sets,
         "rates": rates,
         "coverage": coverage,
         "set_usability": set_usability,
+        "risk_filter": risk_filter,
         "provenance": {
             "source": "homology_pal2nal_ng86",
             "ortholog_filter": "ortholog_one2one",
             "saturation_filter": "drop abs(dnds - 1.0) < 0.01 and dnds >= 10",
             "background_set": "background.random_300",
+            "fp_risk": {
+                "weights": dict(FP_RISK_WEIGHTS),
+                "calibration_state": FP_RISK_CALIBRATION_STATE,
+                "null_result_changes_with_aligner": "weight_not_applicable_until_stage_3",
+            },
         },
     }
 
@@ -163,7 +243,8 @@ def per_gene_rate_vectors(
 def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                gnomad_data: dict | None = None, phylo_data: dict | None = None,
                paml_data: dict | None = None, rdnds_data: dict | None = None,
-               panel: list[str] | None = None) -> dict:
+               panel: list[str] | None = None, diagnostics: dict | None = None,
+               min_low_risk_genes: int = 2) -> dict:
     """Build the ``data`` dict shape ``compute.run_analysis_plan`` expects.
 
     groups: one per starter / expanded.<set> / controls.<set>, each carrying every
@@ -213,7 +294,14 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 source = ortholog.get("dnds_source") or "unknown"
                 _dnds_source_counts[source] = _dnds_source_counts.get(source, 0) + 1
 
-    rate_vectors = per_gene_rate_vectors(gene_data, expansion, rdnds_data, panel)
+    rate_vectors = per_gene_rate_vectors(
+        gene_data,
+        expansion,
+        rdnds_data,
+        panel,
+        diagnostics=diagnostics,
+        min_low_risk_genes=min_low_risk_genes,
+    )
 
     return {
         "groups": groups,
@@ -257,7 +345,23 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 "background_genes": len(
                     (rate_vectors.get("sets") or {}).get("background.random_300", [])
                 ),
+                "fp_risk": {
+                    "weights": dict(FP_RISK_WEIGHTS),
+                    "calibration_state": FP_RISK_CALIBRATION_STATE,
+                    "disclaimer": FP_RISK_DISCLAIMER,
+                    "flagged_genes": (rate_vectors.get("risk_filter") or {}).get("flagged_genes", []),
+                    "excluded_genes": (rate_vectors.get("risk_filter") or {}).get("excluded_genes", []),
+                    "null_result_changes_with_aligner": "weight_not_applicable_until_stage_3",
+                },
             } if rdnds_data else None,
+            "fp_risk": {
+                "weights": dict(FP_RISK_WEIGHTS),
+                "calibration_state": FP_RISK_CALIBRATION_STATE,
+                "disclaimer": FP_RISK_DISCLAIMER,
+                "flagged_genes": (rate_vectors.get("risk_filter") or {}).get("flagged_genes", []),
+                "excluded_genes": (rate_vectors.get("risk_filter") or {}).get("excluded_genes", []),
+                "null_result_changes_with_aligner": "weight_not_applicable_until_stage_3",
+            },
         },
     }
 

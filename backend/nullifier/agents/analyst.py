@@ -6,8 +6,11 @@ from ..tools import ensembl
 from ..tools.gnomad import fetch_constraint
 from ..tools.phylo import lookup_phylo_age
 from ..tools.genomic_data import build_data, retrievable_summary
+from ..tools.diagnostics import run_diagnostics, summarize_set_risk
+from ..tools.panels import mammal_panel
 from ..tools.compute import verify_reported_stats, _data_summary
 from ..config.loader import load_config
+from ..provenance import make_provenance
 from .. import events as ev
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
@@ -206,6 +209,158 @@ def _limit_targets(all_targets: list, expansion: dict) -> list:
     return selected
 
 
+def _unique_genes(genes: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for gene in genes or []:
+        if not isinstance(gene, str) or not gene.strip():
+            continue
+        key = gene.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(gene)
+    return out
+
+
+def _syngo_ensembl_by_symbol(use_cache: bool = True) -> dict[str, str]:
+    try:
+        from ..tools.gene_sets import load_syngo
+        syngo = load_syngo(use_cache=use_cache)
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for record in syngo.get("genes") or []:
+        symbol = record.get("hgnc_symbol")
+        ensg = record.get("ensembl_id")
+        if symbol and ensg:
+            out[str(symbol).upper()] = str(ensg)
+    return out
+
+
+def _resolve_ensembl_ids_for_screen(
+    targets: list[str],
+    use_cache: bool,
+    on_event=None,
+) -> dict[str, str]:
+    syngo_ids = _syngo_ensembl_by_symbol(use_cache=use_cache)
+    resolved: dict[str, str] = {}
+    for gene in targets:
+        upper = gene.upper()
+        if upper.startswith("ENSG"):
+            resolved[gene] = gene
+        elif upper in syngo_ids:
+            resolved[gene] = syngo_ids[upper]
+
+    for gene in targets:
+        if gene in resolved:
+            continue
+        info = ensembl.lookup_gene(gene, use_cache=use_cache)
+        if not info or not info.get("ensembl_id"):
+            continue
+        resolved[gene] = info["ensembl_id"]
+        resolved_from = info.get("_resolved_from")
+        if resolved_from and on_event:
+            on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
+    return resolved
+
+
+def _screen_comparable(
+    targets: list[str],
+    expansion: dict,
+    panel: list[str],
+    min_panel_species: int,
+    use_cache: bool,
+    on_event=None,
+) -> tuple[list[str], dict]:
+    targets = _unique_genes(targets)
+    starters = {g.upper() for g in (expansion.get("starter") or [])}
+    target_to_ensg = _resolve_ensembl_ids_for_screen(targets, use_cache, on_event=on_event)
+    ensg_to_targets: dict[str, list[str]] = {}
+    for gene, ensg in target_to_ensg.items():
+        ensg_to_targets.setdefault(ensg, []).append(gene)
+
+    coverage_by_id = ensembl.screen_panel_coverage_by_id_batch(
+        list(ensg_to_targets.keys()),
+        panel,
+        use_cache=use_cache,
+    )
+
+    kept: list[str] = []
+    genes: list[dict] = []
+    for gene in targets:
+        ensg = target_to_ensg.get(gene)
+        coverage = coverage_by_id.get(ensg) if ensg else None
+        panel_species = sorted(str(s) for s in ((coverage or {}).get("panel_species") or set()))
+        species_count = int((coverage or {}).get("species_count") or len(panel_species))
+        is_starter = gene.upper() in starters
+        keep = is_starter or species_count >= min_panel_species
+        if keep:
+            kept.append(gene)
+        genes.append({
+            "gene": gene,
+            "ensembl_id": ensg,
+            "species_count": species_count,
+            "panel_species": panel_species,
+            "starter": is_starter,
+            "kept": keep,
+            "reason": "starter" if is_starter else (
+                "meets_threshold" if keep else "below_panel_coverage_threshold"
+            ),
+        })
+
+    report = {
+        "enabled": True,
+        "total": len(targets),
+        "kept": len(kept),
+        "dropped": len(targets) - len(kept),
+        "threshold": min_panel_species,
+        "panel_size": len(panel or []),
+        "genes": genes,
+        "provenance": make_provenance(
+            source="analyst.comparability_screen",
+            triggered_by=["gene_sets.all_genes", "tools.panels.mammal_panel"],
+            evidence_refs=["Ensembl Compara condensed homology"],
+            method=(
+                "Resolve target genes to Ensembl IDs; batch-query condensed ortholog "
+                f"coverage; keep non-starters with at least {min_panel_species} panel species."
+            ),
+            confidence=0.85,
+            inputs={
+                "target_count": len(targets),
+                "panel_size": len(panel or []),
+                "min_panel_species": min_panel_species,
+            },
+        ),
+    }
+    return kept, report
+
+
+def _filter_expansion_to_targets(expansion: dict, kept_targets: list[str]) -> dict:
+    kept = {g.upper() for g in kept_targets}
+
+    def _filter_pool(pool):
+        return [g for g in (pool or []) if isinstance(g, str) and g.upper() in kept]
+
+    filtered = dict(expansion)
+    filtered["starter"] = _filter_pool(expansion.get("starter") or [])
+    filtered["expanded"] = {
+        name: _filter_pool(genes)
+        for name, genes in (expansion.get("expanded") or {}).items()
+    }
+    filtered["controls"] = {
+        name: _filter_pool(genes)
+        for name, genes in (expansion.get("controls") or {}).items()
+    }
+    filtered["background"] = {
+        name: _filter_pool(genes)
+        for name, genes in (expansion.get("background") or {}).items()
+    }
+    filtered["total_expanded"] = sum(len(v) for v in filtered["expanded"].values())
+    filtered["total_controls"] = sum(len(v) for v in filtered["controls"].values())
+    return filtered
+
+
 def run_analyst(
     all_targets: list,
     expansion: dict,
@@ -225,7 +380,37 @@ def run_analyst(
         if on_event:
             on_event(e)
 
-    all_targets = _limit_targets(list(all_targets), expansion)
+    all_targets = _unique_genes(list(all_targets))
+    cfg = load_config()
+    analyst_cfg = cfg.get("analyst", {})
+    if analyst_cfg.get("comparability_screen", True):
+        panel = mammal_panel()
+        min_panel_species = int(analyst_cfg.get("min_panel_species", 6))
+        all_targets, screen_report = _screen_comparable(
+            all_targets,
+            expansion,
+            panel,
+            min_panel_species,
+            use_cache,
+            on_event=_emit,
+        )
+        filtered_expansion = _filter_expansion_to_targets(expansion, all_targets)
+        filtered_expansion["comparability_screen"] = screen_report
+        expansion.clear()
+        expansion.update(filtered_expansion)
+        _emit(ev.analyst_comparability_screen(
+            screen_report["total"],
+            screen_report["kept"],
+            screen_report["dropped"],
+            screen_report["threshold"],
+        ))
+
+    limited_targets = _limit_targets(all_targets, expansion)
+    if len(limited_targets) != len(all_targets):
+        filtered_expansion = _filter_expansion_to_targets(expansion, limited_targets)
+        expansion.clear()
+        expansion.update(filtered_expansion)
+    all_targets = limited_targets
     _emit(ev.analyst_started(len(all_targets)))
 
     gene_data = _fetch_all_gene_data(
@@ -261,6 +446,9 @@ def run_analyst(
         rdnds_attached,
     ))
 
+    min_low_risk_genes = int(analyst_cfg.get("min_low_risk_genes", 2))
+    diagnostics = run_diagnostics(gene_data, panel=mammal_panel(), on_event=_emit)
+
     data = build_data(
         gene_data,
         expansion,
@@ -268,11 +456,23 @@ def run_analyst(
         phylo_data=phylo_data,
         paml_data=paml_data,
         rdnds_data=rdnds_data,
+        diagnostics=diagnostics,
+        min_low_risk_genes=min_low_risk_genes,
     )
+    risk_filter = (data.get("rate_vectors") or {}).get("risk_filter") or {}
+    for gene, scored in (risk_filter.get("genes") or {}).items():
+        _emit(ev.diagnostics_risk_scored(
+            gene,
+            scored.get("risk"),
+            scored.get("tier"),
+            scored.get("reasons") or [],
+        ))
+    for set_name, summary in (risk_filter.get("sets") or {}).items():
+        _emit(ev.diagnostics_risk_survival_summary(set_name, summary))
 
     set_a, set_b = _split_into_sets(formalized, starter_entities)
-    set_a_stats = _set_statistics(set_a, gene_data, paml_data) if set_a else None
-    set_b_stats = _set_statistics(set_b, gene_data, paml_data) if set_b else None
+    set_a_stats = _set_statistics(set_a, gene_data, paml_data, diagnostics, min_low_risk_genes) if set_a else None
+    set_b_stats = _set_statistics(set_b, gene_data, paml_data, diagnostics, min_low_risk_genes) if set_b else None
     dnds_saturation = _set_usability(set_a_stats, set_b_stats)
     cross_set = _cross_set_analysis(set_a, set_b, gene_data, dnds_saturation) if (set_a and set_b) else None
 
@@ -296,6 +496,8 @@ def run_analyst(
         "phylo_data": phylo_data,
         "paml_data": paml_data,
         "rdnds_data": rdnds_data,
+        "diagnostics": diagnostics,
+        "risk_filter": risk_filter,
         "set_a": set_a,
         "set_b": set_b,
         "set_a_stats": set_a_stats,
@@ -448,7 +650,13 @@ def _record_from_lookup_id(query: str, data: dict) -> dict:
     }
 
 
-def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = None) -> dict:
+def _set_statistics(
+    genes: list[str],
+    gene_data: dict,
+    paml_data: dict | None = None,
+    diagnostics: dict | None = None,
+    min_low_risk_genes: int = 2,
+) -> dict:
     valid = [g for g in genes if "_error" not in gene_data.get(g, {})]
     if not valid:
         return {"valid_gene_count": 0}
@@ -546,6 +754,7 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
         "dnds_usable": not dnds_degraded,
         "dnds_unusable_reason": unusable_reason,
         "dnds_diagnostics": dnds_diag,
+        "risk_summary": summarize_set_risk(valid, diagnostics, min_low_risk_genes),
         "omega_foreground_n": len(omega_values),
         "omega_foreground_mean": mean(omega_values) if omega_values else None,
         "acceleration_ratio_n": len(acceleration_ratios),
@@ -561,11 +770,17 @@ def _set_statistics(genes: list[str], gene_data: dict, paml_data: dict | None = 
 
 def _set_usability(set_a_stats: dict | None, set_b_stats: dict | None) -> dict:
     stats = [("set_a", set_a_stats), ("set_b", set_b_stats)]
-    degraded = [
+    dnds_degraded = [
         {"set": name, "reason": s.get("dnds_unusable_reason") or "dN/dS set is degraded"}
         for name, s in stats
         if s and s.get("dnds_degraded")
     ]
+    risk_degraded = [
+        {"set": name, "reason": "risk filter left too few scorable genes"}
+        for name, s in stats
+        if s and (s.get("risk_summary") or {}).get("risk_degraded")
+    ]
+    degraded = risk_degraded + dnds_degraded
     fractions = [
         float(s.get("dnds_saturation_fraction", 0.0))
         for _, s in stats
@@ -580,10 +795,21 @@ def _set_usability(set_a_stats: dict | None, set_b_stats: dict | None) -> dict:
         "reason": reason,
         "sets": {
             name: {
-                "usable": bool(s and not s.get("dnds_degraded")),
-                "reason": (s or {}).get("dnds_unusable_reason", ""),
+                "usable": bool(
+                    s
+                    and not s.get("dnds_degraded")
+                    and not (s.get("risk_summary") or {}).get("risk_degraded")
+                ),
+                "reason": (
+                    "risk filter left too few scorable genes"
+                    if (s or {}).get("risk_summary", {}).get("risk_degraded")
+                    else (s or {}).get("dnds_unusable_reason", "")
+                ),
                 "dnds_n": (s or {}).get("dnds_n", 0),
                 "dnds_saturation_fraction": (s or {}).get("dnds_saturation_fraction", 0.0),
+                "dnds_degraded": bool((s or {}).get("dnds_degraded")),
+                "risk_degraded": bool((s or {}).get("risk_summary", {}).get("risk_degraded")),
+                "risk_summary": (s or {}).get("risk_summary"),
             }
             for name, s in stats
         },

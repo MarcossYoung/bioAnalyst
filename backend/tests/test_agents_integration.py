@@ -1,7 +1,7 @@
 """Smoke tests for agent/data handoff guards."""
 
-from nullifier.agents import formalizer, librarian, methodologist, skeptic
-from nullifier.agents.analyst import _set_statistics, _set_usability
+from nullifier.agents import analyst, formalizer, librarian, methodologist, skeptic
+from nullifier.agents.analyst import _filter_expansion_to_targets, _screen_comparable, _set_statistics, _set_usability
 from nullifier.agents.semantic import normalize_atomic_claim
 from nullifier.tools.genomic_data import build_data
 from nullifier.tools.literature import citation_similarity
@@ -287,6 +287,70 @@ def test_build_data_attaches_filtered_rate_vectors():
     assert vectors["provenance"]["source"] == "homology_pal2nal_ng86"
     assert data["provenance"]["rate_vectors"]["background_genes"] == 1
     assert data["provenance"]["rate_vectors"]["source"] == "homology_pal2nal_ng86"
+
+
+def test_analyst_comparability_screen_drops_low_coverage_but_keeps_starters(monkeypatch):
+    expansion = {
+        "starter": ["S1"],
+        "expanded": {"synaptic": ["G2", "G3", "UNRESOLVED"]},
+        "controls": {"control": ["C1"]},
+        "background": {"background.random_300": ["BG1"]},
+    }
+    targets = ["S1", "G2", "G3", "C1", "BG1", "UNRESOLVED"]
+
+    monkeypatch.setattr(
+        analyst,
+        "_syngo_ensembl_by_symbol",
+        lambda use_cache=True: {
+            "S1": "ENSGS1",
+            "G2": "ENSGG2",
+            "G3": "ENSGG3",
+            "BG1": "ENSGBG1",
+        },
+    )
+    monkeypatch.setattr(
+        analyst.ensembl,
+        "lookup_gene",
+        lambda gene, use_cache=True: {"symbol": gene, "ensembl_id": "ENSGC1"} if gene == "C1" else None,
+    )
+    monkeypatch.setattr(
+        analyst.ensembl,
+        "screen_panel_coverage_by_id_batch",
+        lambda ensg_ids, panel, use_cache=True: {
+            "ENSGS1": {"species_count": 0, "panel_species": set()},
+            "ENSGG2": {"species_count": 6, "panel_species": {f"sp{i}" for i in range(6)}},
+            "ENSGG3": {"species_count": 5, "panel_species": {f"sp{i}" for i in range(5)}},
+            "ENSGC1": {"species_count": 6, "panel_species": {f"sp{i}" for i in range(6)}},
+            "ENSGBG1": {"species_count": 0, "panel_species": set()},
+        },
+    )
+
+    kept, report = _screen_comparable(
+        targets,
+        expansion,
+        panel=[f"sp{i}" for i in range(8)],
+        min_panel_species=6,
+        use_cache=True,
+    )
+
+    assert kept == ["S1", "G2", "C1"]
+    assert report["total"] == 6
+    assert report["kept"] == 3
+    assert report["dropped"] == 3
+    by_gene = {row["gene"]: row for row in report["genes"]}
+    assert by_gene["S1"]["kept"] is True
+    assert by_gene["S1"]["reason"] == "starter"
+    assert by_gene["G3"]["kept"] is False
+    assert by_gene["UNRESOLVED"]["ensembl_id"] is None
+
+    filtered = _filter_expansion_to_targets(expansion, kept)
+
+    assert filtered["starter"] == ["S1"]
+    assert filtered["expanded"]["synaptic"] == ["G2"]
+    assert filtered["controls"]["control"] == ["C1"]
+    assert filtered["background"]["background.random_300"] == []
+    assert filtered["total_expanded"] == 1
+    assert filtered["total_controls"] == 1
 
 
 def test_set_statistics_flags_dnds_saturation():
