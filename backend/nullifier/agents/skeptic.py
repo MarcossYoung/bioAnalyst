@@ -1,5 +1,5 @@
 from ..tools.llm_client import llm_call_json
-from ..tools.diagnostics import FP_RISK_DISCLAIMER
+from ..tools.diagnostics import fp_risk_settings
 from ..tools.phenotypes import ASSOCIATION_ONLY_GUARD
 from .semantic import (
     AgentSpec,
@@ -64,7 +64,7 @@ Scores are from 1 (falsified) to 10 (strongly supported):
 Use NOVEL-UNTESTED when novelty_flag is unstudied across claims.
 If classifier_degraded is true, do not treat empty classifications as a confirmed literature void.
 If no genomic test ran or genomic evidence is marked untestable, report genomic_evidence_alignment as N/A; do not score it.
-If RERconverge is present, treat it as secondary association evidence only; it cannot override ERC and must not be framed as causal co-evolution.
+If RERconverge is present, treat it as secondary association evidence only; it cannot override ERC/mirrortree-lite and must not be framed as causal co-evolution.
 Propose the single most decisive experiment or analysis."""
 
 SKEPTIC_DNDS_LIMITATION = (
@@ -175,7 +175,21 @@ CLAIMS + EVIDENCE + TOP ABSTRACTS:
     return _apply_guardrails(verdict, evidence, analyst_result)
 
 
-def _apply_guardrails(verdict: dict, evidence: dict, analyst_result: dict | None) -> dict:
+def _apply_guardrails(
+    verdict: dict,
+    evidence: dict,
+    analyst_result: dict | None,
+    config: dict | None = None,
+) -> dict:
+    return _apply_guardrails_with_config(verdict, evidence, analyst_result, config)
+
+
+def _apply_guardrails_with_config(
+    verdict: dict,
+    evidence: dict,
+    analyst_result: dict | None,
+    config: dict | None = None,
+) -> dict:
     if not isinstance(verdict, dict):
         return verdict
     out = dict(verdict)
@@ -203,6 +217,7 @@ def _apply_guardrails(verdict: dict, evidence: dict, analyst_result: dict | None
         or analyst_interp.get("overall_genomic_assessment") == "untestable"
         or dnds_saturation.get("flag")
     )
+    axis_promoted = _genomic_axis_promoted(config)
     if genomic_not_scored:
         scores["genomic_evidence_alignment"] = None
         out["scores"] = scores
@@ -213,12 +228,30 @@ def _apply_guardrails(verdict: dict, evidence: dict, analyst_result: dict | None
         else:
             note = "No genomic test was run; genomic axis not scored."
         out["verdict_justification"] = _append_note(out.get("verdict_justification", ""), note)
+    elif not axis_promoted:
+        scores["genomic_evidence_alignment"] = None
+        out["scores"] = scores
+        out["verdict_justification"] = _append_note(
+            out.get("verdict_justification", ""),
+            "Genomic axis remains advisory pending Stage 5 promotion; genomic axis not scored.",
+        )
     if evidence.get("classifier_degraded"):
         out["librarian_sanity_check"] = _append_note(
             out.get("librarian_sanity_check", ""),
             "Classifier degraded: empty classifications are a tool failure signal, not confirmed literature absence.",
         )
     return out
+
+
+def _genomic_axis_promoted(config: dict | None = None) -> bool:
+    if config is None:
+        try:
+            from ..config.loader import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+    return bool(((config or {}).get("genomics") or {}).get("axis_promoted", False))
 
 
 def _append_note(text: str, note: str) -> str:
@@ -288,7 +321,7 @@ def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
 
     lines = ["\nGENOMIC EVIDENCE (Analyst):"]
     lines.append(f"  {SKEPTIC_DNDS_LIMITATION}")
-    lines.append(f"  {FP_RISK_DISCLAIMER}")
+    lines.append(f"  {fp_risk_settings()['disclaimer']}")
     lines.append(f"  {ASSOCIATION_ONLY_GUARD}")
     lines.append(f"  Overall genomic assessment: {interp.get('overall_genomic_assessment', '?')}")
     lines.append(f"  Justification: {interp.get('assessment_justification', '')}")
@@ -303,7 +336,7 @@ def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
             f"available={test.get('available')}, "
             f"underpowered={test.get('underpowered', details.get('underpowered'))}, "
             f"primate_confounded={test.get('primate_confounded', details.get('primate_confounded'))}; "
-            "ERC remains verdict-bearing."
+            "ERC/mirrortree-lite remains the primary comparative test when the genomic axis is promoted."
         )
 
     if set_a_stats.get("valid_gene_count"):

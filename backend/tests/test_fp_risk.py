@@ -55,7 +55,7 @@ def test_fp_risk_flags_aligner_sensitive_record():
 
     assert scored["risk"] == pytest.approx(FP_RISK_WEIGHTS["result_changes_with_aligner"])
     assert scored["tier"] == RISK_TIER_FLAGGED
-    assert scored["calibration_state"] == "heuristic"
+    assert "vgenes5_v1" in scored["calibration_state"]
 
 
 def test_aligner_branch_rate_sensitivity_populates_risk_flag():
@@ -159,3 +159,31 @@ def test_skeptic_guardrail_uses_named_risk_reason():
 
     assert out["scores"]["genomic_evidence_alignment"] is None
     assert "Risk filter left too few scorable genes" in out["verdict_justification"]
+
+
+def test_skeptic_genomic_axis_is_advisory_until_promoted():
+    verdict = {"scores": {"genomic_evidence_alignment": 7}, "verdict_justification": "Base."}
+    analyst = {
+        "compute_results": {"tests": [{"test": "mirrortree_lite", "available": True}]},
+        "interpretation": {"overall_genomic_assessment": "supports"},
+        "dnds_saturation": {"flag": False},
+    }
+
+    out = _apply_guardrails(verdict, {}, analyst, config={"genomics": {"axis_promoted": False}})
+
+    assert out["scores"]["genomic_evidence_alignment"] is None
+    assert "advisory pending Stage 5 promotion" in out["verdict_justification"]
+
+
+def test_skeptic_keeps_genomic_score_after_promotion():
+    verdict = {"scores": {"genomic_evidence_alignment": 7}, "verdict_justification": "Base."}
+    analyst = {
+        "compute_results": {"tests": [{"test": "mirrortree_lite", "available": True}]},
+        "interpretation": {"overall_genomic_assessment": "supports"},
+        "dnds_saturation": {"flag": False},
+    }
+
+    out = _apply_guardrails(verdict, {}, analyst, config={"genomics": {"axis_promoted": True}})
+
+    assert out["scores"]["genomic_evidence_alignment"] == 7
+    assert "advisory pending Stage 5 promotion" not in out["verdict_justification"]

@@ -22,7 +22,10 @@ from typing import Any, Iterable
 from .agents.semantic import AgentSpec, OutputContract, OutputField
 
 PIPELINE_VERSION = "v6.0.0"
-CALIBRATION_NOTE = "Heuristic score, not a calibrated probability."
+CALIBRATION_NOTE = (
+    "FP-risk score is calibrated against the V-Genes Stage 5 benchmark; "
+    "it is not a probability."
+)
 
 
 @dataclass

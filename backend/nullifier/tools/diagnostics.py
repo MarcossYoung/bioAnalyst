@@ -1,12 +1,13 @@
 """Per-gene diagnostic records and Stage-2 false-positive risk scoring.
 
 Stage 2 treats ``result_changes_with_aligner is None`` as "not applicable yet",
-not as evidence of alignment stability. The 0.40 aligner-sensitivity term is
-therefore skipped until Stage 3 can populate it from primary-test reruns.
+not as evidence of alignment stability. The calibrated aligner-sensitivity term
+is therefore skipped until Stage 3 can populate it from primary-test reruns.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
+from functools import lru_cache
 import math
 from statistics import median
 from typing import Any
@@ -19,11 +20,11 @@ RISK_TIER_EXCLUDED = "excluded"
 FLAGGED_RISK_FLOOR = 0.25
 EXCLUDED_RISK_FLOOR = 0.50
 
-RESULT_CHANGES_WITH_ALIGNER_WEIGHT = 0.40
-LOW_ALIGNMENT_CONFIDENCE_WEIGHT = 0.15
+RESULT_CHANGES_WITH_ALIGNER_WEIGHT = 0.45
+LOW_ALIGNMENT_CONFIDENCE_WEIGHT = 0.25
 RECOMBINATION_WEIGHT = 0.10
 SATURATION_WEIGHT = 0.10
-GBGC_WEIGHT = 0.10
+GBGC_WEIGHT = 0.25
 LOW_POWER_WEIGHT = 0.10
 NG86_DIVERGENCE_WEIGHT = 0.05
 
@@ -44,8 +45,47 @@ FP_RISK_WEIGHTS = {
     "low_power": LOW_POWER_WEIGHT,
     "ng86_divergence": NG86_DIVERGENCE_WEIGHT,
 }
-FP_RISK_CALIBRATION_STATE = "heuristic"
-FP_RISK_DISCLAIMER = "FP-risk weights are a heuristic, not yet calibrated (see Stage 5)."
+FP_RISK_CALIBRATION_STATE = (
+    "calibrated against 4 artifact families (2026-06-12, vgenes5_v1); "
+    "held-out positive POS-ERC-SLC30A9-2021 recovered"
+)
+FP_RISK_DISCLAIMER = (
+    "FP-risk weights are calibrated against the V-Genes Stage 5 benchmark "
+    "vgenes5_v1; the score is a benchmark separation score, not a probability."
+)
+
+
+@lru_cache(maxsize=1)
+def _cached_fp_risk_settings() -> dict:
+    try:
+        from ..config.loader import load_config
+
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    return fp_risk_settings(cfg)
+
+
+def fp_risk_settings(config: dict | None = None) -> dict:
+    """Return config-driven FP-risk settings with calibrated defaults."""
+    if config is None:
+        if _cached_fp_risk_settings.cache_info().currsize:
+            return dict(_cached_fp_risk_settings())
+        return _cached_fp_risk_settings()
+    section = (config or {}).get("fp_risk") or {}
+    weights = dict(FP_RISK_WEIGHTS)
+    weights.update({
+        str(k): float(v)
+        for k, v in (section.get("weights") or {}).items()
+        if k in weights and isinstance(v, (int, float))
+    })
+    return {
+        "weights": weights,
+        "calibration_state": section.get("calibration_state") or FP_RISK_CALIBRATION_STATE,
+        "disclaimer": section.get("disclaimer") or FP_RISK_DISCLAIMER,
+        "dataset_version": section.get("dataset_version") or "vgenes5_v1",
+        "calibration_date": section.get("calibration_date") or "2026-06-12",
+    }
 
 
 @dataclass
@@ -160,19 +200,20 @@ def tier(risk: float | None) -> str:
     return RISK_TIER_CONTRIBUTES
 
 
-def fp_risk(d: Any) -> tuple[float, list[str]]:
-    """Return the heuristic Stage-2 false-positive risk and named reasons.
+def fp_risk(d: Any, *, weights: dict | None = None) -> tuple[float, list[str]]:
+    """Return the calibrated Stage-2 false-positive risk and named reasons.
 
     The score is a bounded sum of named terms. ``result_changes_with_aligner``
     contributes only when explicitly true; when null, the weight is skipped
     because Stage 2 has no aligner-rerun primary result to compare.
     """
+    weights = dict(weights or fp_risk_settings()["weights"])
     risk = 0.0
     reasons: list[str] = []
 
     aligner_changed = _get(d, "alignment.result_changes_with_aligner")
     if aligner_changed is True:
-        risk += RESULT_CHANGES_WITH_ALIGNER_WEIGHT
+        risk += weights["result_changes_with_aligner"]
         reasons.append("result_changes_with_aligner")
     elif aligner_changed is None:
         reasons.append("result_changes_with_aligner_not_assessed_weight_skipped")
@@ -192,13 +233,13 @@ def fp_risk(d: Any) -> tuple[float, list[str]]:
         or (masked_fraction is not None and masked_fraction > COLUMNS_MASKED_FRACTION_FLOOR)
     )
     if low_alignment:
-        risk += LOW_ALIGNMENT_CONFIDENCE_WEIGHT
+        risk += weights["low_alignment_confidence"]
         reasons.append("low_alignment_confidence")
 
     breakpoints = _breakpoint_count(_get(d, "recombination.gard_breakpoints"))
     action = str(_get(d, "recombination.action", "") or "").lower()
     if breakpoints > 0 or action in {"partition", "exclude", "mask"}:
-        risk += RECOMBINATION_WEIGHT
+        risk += weights["recombination"]
         reasons.append("recombination_detected")
 
     saturated = _as_float(_get(d, "saturation.saturated_branch_fraction"))
@@ -211,35 +252,38 @@ def fp_risk(d: Any) -> tuple[float, list[str]]:
         (saturated is not None and saturated > SATURATED_BRANCH_FRACTION_FLOOR)
         or (surviving_n is not None and surviving_n < SURVIVING_BRANCHES_FLOOR)
     ):
-        risk += SATURATION_WEIGHT
+        risk += weights["saturation"]
         reasons.append("dS_saturation_or_too_few_surviving_branches")
 
     gbgc_risk = str(_get(d, "gbgc.risk", "") or "").lower()
     if gbgc_risk == "high":
-        risk += GBGC_WEIGHT
+        risk += weights["gbgc"]
         reasons.append("high_gbgc_risk")
 
     power_usable = _get(d, "power.usable")
     if power_usable is False:
-        risk += LOW_POWER_WEIGHT
+        risk += weights["low_power"]
         reason = _get(d, "power.exclusion_reason") or "low_power"
         reasons.append(f"low_power:{reason}")
 
     divergence = _as_float(_get(d, "ng86_crosscheck.model_vs_ng86_divergence"))
     if divergence is not None and divergence >= NG86_DIVERGENCE_FLOOR:
-        risk += NG86_DIVERGENCE_WEIGHT
+        risk += weights["ng86_divergence"]
         reasons.append("model_vs_ng86_divergence")
 
     return max(0.0, min(1.0, round(risk, 6))), reasons
 
 
-def score_record(record: Any) -> dict:
-    risk, reasons = fp_risk(record)
+def score_record(record: Any, *, config: dict | None = None, weights: dict | None = None) -> dict:
+    settings = fp_risk_settings(config)
+    active_weights = dict(weights or settings["weights"])
+    risk, reasons = fp_risk(record, weights=active_weights)
     return {
         "risk": risk,
         "tier": tier(risk),
         "reasons": reasons,
-        "calibration_state": FP_RISK_CALIBRATION_STATE,
+        "calibration_state": settings["calibration_state"],
+        "weights": active_weights,
     }
 
 

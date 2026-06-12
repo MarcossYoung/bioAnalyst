@@ -1,7 +1,7 @@
 from statistics import mean
 
 from ..tools.llm_client import llm_call_json
-from ..tools.diagnostics import FP_RISK_DISCLAIMER
+from ..tools.diagnostics import fp_risk_settings
 from ..tools.phenotypes import ASSOCIATION_ONLY_GUARD
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
@@ -59,6 +59,7 @@ def run_interpreter(
     robustness: dict | None = None,
     reproducibility: dict | None = None,
 ) -> dict:
+    risk_disclaimer = fp_risk_settings()["disclaimer"]
     if compute_results.get("untestable"):
         reason = compute_results.get("untestable_reason") or "No compatible compute method for the claim construct."
         return {
@@ -66,7 +67,7 @@ def run_interpreter(
             "outlier_genes": [],
             "regulatory_overlap": {},
             "reproducibility_check": [],
-            "limitations": [reason, FP_RISK_DISCLAIMER],
+            "limitations": [reason, risk_disclaimer],
             "overall_genomic_assessment": "untestable",
             "assessment_justification": reason,
             "required_construct": compute_results.get("required_construct"),
@@ -75,8 +76,8 @@ def run_interpreter(
     out = llm_call_json("interpreter", INTERPRETER_SYSTEM, user, max_tokens=3500)
     if isinstance(out, dict):
         limitations = list(out.get("limitations") or [])
-        if FP_RISK_DISCLAIMER not in limitations:
-            limitations.append(FP_RISK_DISCLAIMER)
+        if risk_disclaimer not in limitations:
+            limitations.append(risk_disclaimer)
         if _has_rerconverge(compute_results) and ASSOCIATION_ONLY_GUARD not in limitations:
             limitations.append(ASSOCIATION_ONLY_GUARD)
         out["limitations"] = limitations
@@ -91,6 +92,7 @@ def _build_user_prompt(
     robustness: dict | None,
     reproducibility: dict | None,
 ) -> str:
+    risk_disclaimer = fp_risk_settings()["disclaimer"]
     tests = compute_results.get("tests") or []
     test_lines = []
     for t in tests:
@@ -178,7 +180,7 @@ def _build_user_prompt(
         risk_block = (
             "\nFP-RISK FILTER:\n"
             f"  calibration_state: {risk_filter.get('calibration_state', 'heuristic')}\n"
-            f"  disclaimer: {FP_RISK_DISCLAIMER}\n"
+            f"  disclaimer: {risk_disclaimer}\n"
             f"  flagged_genes: {risk_filter.get('flagged_genes', [])}\n"
             f"  excluded_genes: {risk_filter.get('excluded_genes', [])}\n"
             f"  set_survival: {risk_filter.get('sets', {})}\n"

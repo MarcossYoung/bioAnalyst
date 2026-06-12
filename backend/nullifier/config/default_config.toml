@@ -46,6 +46,27 @@ comparability_screen = true
 min_panel_species = 6
 min_low_risk_genes = 2
 
+[genomics]
+# Verdict-bearing only after the Stage 5 validation benchmark is run and accepted
+# for this deployment. Until then the genomic axis remains advisory.
+axis_promoted = false
+axis_promotion_benchmark = "vgenes5_v1"
+
+[fp_risk]
+dataset_version = "vgenes5_v1"
+calibration_date = "2026-06-12"
+calibration_state = "calibrated against 4 artifact families (2026-06-12, vgenes5_v1); held-out positive POS-ERC-SLC30A9-2021 recovered"
+disclaimer = "FP-risk weights are calibrated against the V-Genes Stage 5 benchmark vgenes5_v1; the score is a benchmark separation score, not a probability."
+
+[fp_risk.weights]
+result_changes_with_aligner = 0.45
+low_alignment_confidence = 0.25
+recombination = 0.10
+saturation = 0.10
+gbgc = 0.25
+low_power = 0.10
+ng86_divergence = 0.05
+
 [r]
 enabled = true
 r_home = ""  # auto-detect if empty; set manually if R is in a non-standard location

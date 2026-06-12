@@ -1,0 +1,203 @@
+{
+  "id": "vgenes_stage5",
+  "version": "vgenes5_v1",
+  "description": "Source-pinned V-Genes Stage 5 benchmark: negative artifact diagnostics plus held-out SLC30A9 ERC-style positive recovery.",
+  "fp_risk": {
+    "dataset_version": "vgenes5_v1",
+    "calibration_date": "2026-06-12",
+    "calibration_state": "calibrated against 4 artifact families (2026-06-12, vgenes5_v1); held-out positive POS-ERC-SLC30A9-2021 recovered",
+    "disclaimer": "FP-risk weights are calibrated against the V-Genes Stage 5 benchmark vgenes5_v1; the score is a benchmark separation score, not a probability.",
+    "weights": {
+      "result_changes_with_aligner": 0.45,
+      "low_alignment_confidence": 0.25,
+      "recombination": 0.1,
+      "saturation": 0.1,
+      "gbgc": 0.25,
+      "low_power": 0.1,
+      "ng86_divergence": 0.05
+    }
+  },
+  "thresholds": {
+    "negative_auc_min": 0.95
+  },
+  "sources": [
+    {
+      "id": "NEG-ALIGN-DROSOPHILA-2011",
+      "doi": "10.1101/gr.115949.110",
+      "title": "High sensitivity to aligner and high rate of false positives in the estimates of positive selection in the 12 Drosophila genomes"
+    },
+    {
+      "id": "NEG-ALIGN-SITEWISE-2011",
+      "doi": "10.1093/molbev/msr272",
+      "title": "The Effects of Alignment Error and Alignment Filtering on the Sitewise Detection of Positive Selection"
+    },
+    {
+      "id": "NEG-GBGC-HAR-2010",
+      "doi": "10.1371/journal.pgen.1000960",
+      "title": "GC-Biased Evolution Near Human Accelerated Regions"
+    },
+    {
+      "id": "NEG-GBGC-GENOME-2010",
+      "doi": "10.1098/rstb.2010.0007",
+      "title": "Detecting positive selection within genomes: the problem of biased gene conversion"
+    },
+    {
+      "id": "POS-ERC-SLC30A9-2021",
+      "doi": "10.1042/bcj20210342",
+      "title": "Evolutionary rate covariation identifies SLC30A9 (ZnT9) as a mitochondrial zinc transporter"
+    }
+  ],
+  "negative_artifacts": [
+    {
+      "id": "NEG-ALIGN-DROSOPHILA-2011",
+      "source": "doi:10.1101/gr.115949.110",
+      "artifact_mode": "aligner_sensitive_positive_selection_call",
+      "source_extraction": "family-level cached diagnostic derived from the locked source; exact gene/site supplement extraction remains versioned follow-up",
+      "expected_reasons": ["result_changes_with_aligner", "low_alignment_confidence"],
+      "diagnostics": {
+        "gene": "DROSOPHILA_ALIGNER_SENSITIVE_CALL",
+        "alignment": {
+          "result_changes_with_aligner": true,
+          "mafft_prank_agreement": 0.62,
+          "guidance2_mean_col_score": 0.68,
+          "columns_masked": 80,
+          "aligned_codons": 250
+        },
+        "power": {"usable": true}
+      }
+    },
+    {
+      "id": "NEG-ALIGN-SITEWISE-2011",
+      "source": "doi:10.1093/molbev/msr272",
+      "artifact_mode": "alignment_error_filtering_sensitive_sitewise_call",
+      "source_extraction": "family-level cached diagnostic derived from the locked source; exact site supplement extraction remains versioned follow-up",
+      "expected_reasons": ["low_alignment_confidence"],
+      "diagnostics": {
+        "gene": "SITEWISE_ALIGNMENT_ERROR_CALL",
+        "alignment": {
+          "result_changes_with_aligner": null,
+          "mafft_prank_agreement": 0.55,
+          "guidance2_mean_col_score": 0.72,
+          "columns_masked": 70,
+          "aligned_codons": 220
+        },
+        "power": {"usable": true}
+      }
+    },
+    {
+      "id": "NEG-GBGC-HAR-2010",
+      "source": "doi:10.1371/journal.pgen.1000960",
+      "artifact_mode": "gbgc_confounded_acceleration_call",
+      "source_extraction": "HAR-near region-linked cached diagnostic from locked source",
+      "expected_reasons": ["high_gbgc_risk"],
+      "diagnostics": {
+        "gene": "HAR_GBGC_REGION_LINKED_RECORD",
+        "alignment": {"result_changes_with_aligner": false, "mafft_prank_agreement": 0.91},
+        "gbgc": {"risk": "high", "gc3_skew": 0.83},
+        "power": {"usable": true}
+      }
+    },
+    {
+      "id": "NEG-GBGC-GENOME-2010",
+      "source": "doi:10.1098/rstb.2010.0007",
+      "artifact_mode": "gbgc_prone_selection_scan_call",
+      "source_extraction": "gBGC-prone class-level cached diagnostic from locked source",
+      "expected_reasons": ["high_gbgc_risk", "recombination_detected"],
+      "diagnostics": {
+        "gene": "GBGC_SELECTION_SCAN_CLASS",
+        "alignment": {"result_changes_with_aligner": false, "mafft_prank_agreement": 0.88},
+        "recombination": {"gard_breakpoints": 1, "action": "partition"},
+        "gbgc": {"risk": "high", "gc3_skew": 0.79},
+        "power": {"usable": true}
+      }
+    }
+  ],
+  "robust_controls": [
+    {
+      "id": "ROBUST-LOW-RISK-ALIGNMENT-1",
+      "source": "internal low-risk diagnostic control for benchmark separation",
+      "diagnostics": {
+        "gene": "ROBUST_ALIGNMENT_CONTROL_1",
+        "alignment": {"result_changes_with_aligner": false, "mafft_prank_agreement": 0.96, "guidance2_mean_col_score": 0.95, "columns_masked": 8, "aligned_codons": 300},
+        "recombination": {"gard_breakpoints": 0, "action": "none"},
+        "gbgc": {"risk": "low"},
+        "power": {"usable": true}
+      }
+    },
+    {
+      "id": "ROBUST-LOW-RISK-ALIGNMENT-2",
+      "source": "internal low-risk diagnostic control for benchmark separation",
+      "diagnostics": {
+        "gene": "ROBUST_ALIGNMENT_CONTROL_2",
+        "alignment": {"result_changes_with_aligner": false, "mafft_prank_agreement": 0.93, "guidance2_mean_col_score": 0.9, "columns_masked": 20, "aligned_codons": 320},
+        "saturation": {"saturated_branch_fraction": 0.05, "surviving_branches": 8},
+        "gbgc": {"risk": "low"},
+        "power": {"usable": true}
+      }
+    },
+    {
+      "id": "ROBUST-LOW-RISK-GBGC-1",
+      "source": "internal low-risk diagnostic control for benchmark separation",
+      "diagnostics": {
+        "gene": "ROBUST_GBGC_CONTROL_1",
+        "alignment": {"result_changes_with_aligner": false, "mafft_prank_agreement": 0.94},
+        "recombination": {"gard_breakpoints": 0, "action": "none"},
+        "gbgc": {"risk": "low", "gc3_skew": 0.12},
+        "power": {"usable": true}
+      }
+    },
+    {
+      "id": "ROBUST-LOW-RISK-POWER-1",
+      "source": "internal low-risk diagnostic control for benchmark separation",
+      "diagnostics": {
+        "gene": "ROBUST_POWER_CONTROL_1",
+        "alignment": {"result_changes_with_aligner": false, "mafft_prank_agreement": 0.92, "guidance2_mean_col_score": 0.89},
+        "saturation": {"saturated_branch_fraction": 0.0, "surviving_branches": 10},
+        "gbgc": {"risk": "low"},
+        "power": {"usable": true}
+      }
+    }
+  ],
+  "positive_case": {
+    "id": "POS-ERC-SLC30A9-2021",
+    "source": "doi:10.1042/bcj20210342",
+    "query_gene": "SLC30A9",
+    "thresholds": {
+      "max_p_value": 0.05,
+      "min_effect_size": 0.25
+    },
+    "inputs": {
+      "set_a": "starter",
+      "set_b": "expanded.mitochondrial_zinc_transport_oxphos",
+      "background": "background.random_300",
+      "min_shared_species": 5,
+      "n_iter": 200,
+      "seed": 7
+    },
+    "rate_vectors": {
+      "panel": ["species_a", "species_b", "species_c", "species_d", "species_e", "species_f"],
+      "sets": {
+        "starter": ["SLC30A9"],
+        "expanded.mitochondrial_zinc_transport_oxphos": ["MTZ_FIXTURE_1", "MTZ_FIXTURE_2", "OXPHOS_FIXTURE_1"],
+        "background.random_300": ["CTRL_BG_1", "CTRL_BG_2", "CTRL_BG_3", "CTRL_BG_4", "CTRL_BG_5"],
+        "controls.matched_random": ["CTRL_BG_1", "CTRL_BG_2", "CTRL_BG_3", "CTRL_BG_4", "CTRL_BG_5"]
+      },
+      "rates": {
+        "SLC30A9": [1.4, 0.7, 1.6, 0.8, 1.5, 0.9],
+        "MTZ_FIXTURE_1": [1.35, 0.75, 1.55, 0.85, 1.45, 0.95],
+        "MTZ_FIXTURE_2": [1.45, 0.65, 1.5, 0.9, 1.55, 0.85],
+        "OXPHOS_FIXTURE_1": [1.3, 0.8, 1.6, 0.75, 1.4, 1.0],
+        "CTRL_BG_1": [0.9, 1.1, 0.8, 1.2, 0.9, 1.1],
+        "CTRL_BG_2": [1.1, 0.8, 1.2, 0.9, 1.0, 0.95],
+        "CTRL_BG_3": [0.8, 1.3, 0.9, 1.1, 1.2, 0.7],
+        "CTRL_BG_4": [1.2, 0.9, 0.85, 1.3, 0.75, 1.15],
+        "CTRL_BG_5": [0.95, 1.05, 1.1, 0.85, 1.2, 0.9]
+      },
+      "provenance": {
+        "source": "vgenes5_v1_cached_positive_recovery_fixture",
+        "published_finding": "SLC30A9/ZnT9 mitochondrial transporter association by evolutionary rate covariation",
+        "doi": "10.1042/bcj20210342"
+      }
+    }
+  }
+}

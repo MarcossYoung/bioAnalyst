@@ -7,12 +7,10 @@ from statistics import mean
 
 from .panels import mammal_panel
 from .diagnostics import (
-    FP_RISK_CALIBRATION_STATE,
-    FP_RISK_DISCLAIMER,
-    FP_RISK_WEIGHTS,
     RISK_TIER_EXCLUDED,
     RISK_TIER_FLAGGED,
     diagnostics_to_dict,
+    fp_risk_settings,
     score_record,
 )
 from .branch_rates import BRANCH_RATE_SOURCE
@@ -140,12 +138,13 @@ def per_gene_rate_vectors(
     using_branch_rates = bool(branch_rate_data)
     panel = _branch_rate_panel(branch_rate_data, panel) if using_branch_rates else [str(s).lower() for s in (panel or mammal_panel())]
     panel_set = set(panel)
+    risk_settings = fp_risk_settings()
     rates: dict[str, list[float | None]] = {}
     coverage: dict[str, dict] = {}
     risk_filter = {
-        "calibration_state": FP_RISK_CALIBRATION_STATE,
-        "disclaimer": FP_RISK_DISCLAIMER,
-        "weights": dict(FP_RISK_WEIGHTS),
+        "calibration_state": risk_settings["calibration_state"],
+        "disclaimer": risk_settings["disclaimer"],
+        "weights": dict(risk_settings["weights"]),
         "min_low_risk_genes": int(min_low_risk_genes),
         "genes": {},
         "flagged_genes": [],
@@ -282,8 +281,8 @@ def per_gene_rate_vectors(
             "background_set": "background.random_300",
             "estimator": "per-branch relative rates with gene-wide rate removed" if using_branch_rates else "pairwise NG86 dN/dS",
             "fp_risk": {
-                "weights": dict(FP_RISK_WEIGHTS),
-                "calibration_state": FP_RISK_CALIBRATION_STATE,
+                "weights": dict(risk_settings["weights"]),
+                "calibration_state": risk_settings["calibration_state"],
                 "null_result_changes_with_aligner": "weight_not_applicable_until_stage_3",
             },
         },
@@ -305,6 +304,7 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
     variables: same metrics, but as a single aligned vector across ``gene_index``
     (the union of all set genes), so xy-tests (spearman/pearson) can run across genes.
     """
+    risk_settings = fp_risk_settings()
     excl = {g.upper() for g in (exclude or set())}
     per = per_gene_metrics(gene_data, gnomad_data, phylo_data, paml_data)
 
@@ -407,9 +407,9 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                     (rate_vectors.get("sets") or {}).get("background.random_300", [])
                 ),
                 "fp_risk": {
-                    "weights": dict(FP_RISK_WEIGHTS),
-                    "calibration_state": FP_RISK_CALIBRATION_STATE,
-                    "disclaimer": FP_RISK_DISCLAIMER,
+                    "weights": dict(risk_settings["weights"]),
+                    "calibration_state": risk_settings["calibration_state"],
+                    "disclaimer": risk_settings["disclaimer"],
                     "flagged_genes": (rate_vectors.get("risk_filter") or {}).get("flagged_genes", []),
                     "excluded_genes": (rate_vectors.get("risk_filter") or {}).get("excluded_genes", []),
                     "null_result_changes_with_aligner": "weight_not_applicable_until_stage_3",
@@ -437,9 +437,9 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 "overclaim_guard": (rerconverge_data or {}).get("overclaim_guard"),
             } if rerconverge_data else None,
             "fp_risk": {
-                "weights": dict(FP_RISK_WEIGHTS),
-                "calibration_state": FP_RISK_CALIBRATION_STATE,
-                "disclaimer": FP_RISK_DISCLAIMER,
+                "weights": dict(risk_settings["weights"]),
+                "calibration_state": risk_settings["calibration_state"],
+                "disclaimer": risk_settings["disclaimer"],
                 "flagged_genes": (rate_vectors.get("risk_filter") or {}).get("flagged_genes", []),
                 "excluded_genes": (rate_vectors.get("risk_filter") or {}).get("excluded_genes", []),
                 "null_result_changes_with_aligner": "weight_not_applicable_until_stage_3",

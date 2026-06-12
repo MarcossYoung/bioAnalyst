@@ -27,6 +27,84 @@ primary test reproduces a published comparative finding.**
   separation; only then do the weights stop being a bare heuristic.
 - **Promotion:** only after the benchmark passes may the axis carry a verdict.
 
+## Benchmark v1 cases (locked)
+
+Stage 5 uses a small, source-pinned benchmark rather than an invented toy set. The
+negative set calibrates the risk layer only; the positive case tests whether the primary
+comparative axis can recover a published finding.
+
+### Negative artifact set — risk-layer calibration
+
+Each negative case is stored as a labeled diagnostic case with the published source,
+artifact mode, affected gene/site/region identifiers where available, and the expected
+risk reason(s). The harness may use cached diagnostics for CI, but the source extraction
+rules below are version-pinned and auditable.
+
+1. **NEG-ALIGN-DROSOPHILA-2011**
+   - Source: Markova-Raina & Petrov, "High sensitivity to aligner and high rate of
+     false positives in the estimates of positive selection in the 12 Drosophila
+     genomes", Genome Research, 2011, DOI: `10.1101/gr.115949.110`.
+   - Case definition: Drosophila positive-selection calls reported as aligner-sensitive
+     in the paper/supplement. Each extracted gene/site call becomes one artifact case.
+   - Expected signal: `alignment.result_changes_with_aligner = true` and/or low
+     alignment-confidence diagnostics; final `fp_risk.tier` must be `flagged` or
+     `excluded`.
+
+2. **NEG-ALIGN-SITEWISE-2011**
+   - Source: Jordan & Goldman, "The Effects of Alignment Error and Alignment Filtering
+     on the Sitewise Detection of Positive Selection", Molecular Biology and Evolution,
+     2011/2012 issue, DOI: `10.1093/molbev/msr272`.
+   - Case definition: alignment-error / filtering-sensitive sitewise positive-selection
+     detections from the paper's benchmark examples. These are method-artifact cases, not
+     biological positives.
+   - Expected signal: low alignment confidence, material MAFFT/PRANK or filtered/unfiltered
+     disagreement where available; final `fp_risk.tier` must be `flagged` or `excluded`.
+
+3. **NEG-GBGC-HAR-2010**
+   - Source: Katzman et al., "GC-Biased Evolution Near Human Accelerated Regions",
+     PLoS Genetics, 2010, DOI: `10.1371/journal.pgen.1000960`.
+   - Case definition: HAR-near loci/regions where accelerated evolution is explained or
+     materially confounded by GC-biased evolution. These are gBGC artifact controls for
+     the risk model; noncoding cases are represented as region-linked diagnostic records
+     and do not enter the ERC positive-recovery test.
+   - Expected signal: `gbgc.risk = high`; final `fp_risk.tier` must be `flagged` or
+     `excluded`.
+
+4. **NEG-GBGC-GENOME-2010**
+   - Source: Ratnakumar et al., "Detecting positive selection within genomes: the
+     problem of biased gene conversion", Philosophical Transactions of the Royal Society
+     B, 2010, DOI: `10.1098/rstb.2010.0007`.
+   - Case definition: gBGC-prone selection-scan calls/classes described by the paper,
+     preferentially protein-coding examples where identifiers are extractable from the
+     paper or supplement.
+   - Expected signal: high gBGC risk, plus recombination/hotspot annotation where
+     available; final `fp_risk.tier` must be `flagged` or `excluded`.
+
+Optional expansion after v1, not required for promotion: Bolívar et al., "Biased
+Inference of Selection Due to GC-Biased Gene Conversion and the Rate of Protein Evolution
+in Flycatchers When Accounting for It", Molecular Biology and Evolution, 2018, 35(10):2475,
+DOI: `10.1093/molbev/msy149`.
+
+### Positive reproducible case — primary-axis recovery
+
+**POS-ERC-SLC30A9-2021**
+- Source: "Evolutionary rate covariation identifies SLC30A9 (ZnT9) as a mitochondrial
+  zinc transporter", Biochemical Journal, 2021, DOI: `10.1042/bcj20210342`.
+- Why this case: it is an ERC-style comparative finding, so it exercises the Stage 3
+  primary axis directly instead of resting promotion on the underpowered Stage 4
+  rate-phenotype leg.
+- Test input:
+  - Query gene: `SLC30A9`.
+  - Positive comparator set: curated mitochondrial zinc / mitochondrial transporter /
+    OXPHOS-context genes extracted from the paper and its data, versioned in the benchmark.
+  - Negative comparator set: matched random/control genes already used by the Stage 3
+    control-set machinery.
+- Recovery criterion: `SLC30A9` must rank above the predeclared percentile threshold
+  against controls by ERC/mirrortree-lite rate covariation, with the same direction as the
+  published finding, and no high-risk diagnostic reason may be required to make it pass.
+- This positive case is **not used to tune weights**. It is a held-out recovery check
+  evaluated after negative-set calibration.
+
 ## Design
 
 ### 5.1 Harness — `validation/` (new)
@@ -58,14 +136,10 @@ become calibrated/config-driven) · config (calibration table + axis-promotion f
 dataset versions) · report (flip disclaimer) · tests.
 
 ## Open decisions (resolve when we plan Stage 5 — these are the real work)
-1. **Negative-set curation** — which specific artifact papers/cases (start from the
-   alignment-sensitivity + gBGC false-positive literature the spec gestures at). A
-   literature-sourcing task.
-2. **Positive-set choice** — one tractable, well-documented published result to reproduce.
-   Favor an **ERC/selection** result over a rate-phenotype association: the Stage 4
-   RERconverge leg is underpowered (~15–25 species, primate-confounded), so a rate-phenotype
-   target would make the benchmark rest on the weakest part of the pipeline.
-3. **Separation metric + pass threshold** — define explicitly up front (recommend
+1. **Case extraction details** — the source families and positive case are locked above;
+   implementation still needs to extract exact identifiers from papers/supplements into
+   `validation/benchmarks/vgenes5_v1/` with hashes and source notes.
+2. **Separation metric + pass threshold** — define explicitly up front (recommend
    AUC ≥ a fixed threshold **and** positive recovered).
 
 ## Verification (this ends the project, not "the pipeline runs")
