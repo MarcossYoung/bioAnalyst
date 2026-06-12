@@ -6,14 +6,14 @@
 ## Context
 
 Selection detection is **interpretation only — never the headline** (spec §1, §8.1).
-After the primary test (ERC/RERconverge) and the benchmark (Stage 5), Stage 6 adds HyPhy
-selection tests to answer *"is the rate shift ERC/RERconverge found driven by selection,
-or by drift/relaxation?"* — context, not verdict. Only **then** does gene-set size scale
+After the primary test (ERC, with RERconverge as a flagged secondary) and the benchmark
+(Stage 5), Stage 6 adds HyPhy selection tests to answer *"is the rate shift the primary
+test found driven by selection, or by drift/relaxation?"* — context, not verdict. Only **then** does gene-set size scale
 beyond the curated set.
 
 ## Scope / locked decisions
-- HyPhy selection tests run **only on the genes driving an ERC/RERconverge signal**, not
-  all genes.
+- HyPhy selection tests run **only on the genes driving the primary rate signal** (ERC
+  primary; RERconverge secondary, where it cleared the species floor), not all genes.
 - Strictly **interpretation**: never produces the primary score.
 - **HyPhy, not PAML** (CLI + JSON + maintained). codeml stays **opt-in single-gene
   drill-down** (M7/M8 site models) only — never automated.
@@ -30,9 +30,9 @@ Calls `genomics_container.run_tool` (Stage 0); each test emits JSON:
 - **BUSTED** — gene-wide episodic selection (optional).
 
 ### 6.2 Interpretation-only enforcement
-`agents/interpreter.py` + `agents/skeptic.py`: selection output **annotates** the
-ERC/RERconverge finding (drift vs selection vs relaxation context) and **never** overrides
-the primary score. This is a correctness invariant, mechanically enforced.
+`agents/interpreter.py` + `agents/skeptic.py`: selection output **annotates** the primary
+rate finding (drift vs selection vs relaxation context) and **never** overrides the primary
+score (ERC; RERconverge secondary). This is a correctness invariant, mechanically enforced.
 
 ### 6.3 gBGC interaction (spec §2.4)
 A high-`gbgc.risk` gene (from the Stage 1 record) **cannot contribute a positive-selection
@@ -52,8 +52,8 @@ Never in the automated path.
 ## Files (anticipated)
 `tools/hyphy_selection.py` (new) · `tools/compute.py` (selection result typing, marked
 interpretation-only) · `agents/interpreter.py` + `skeptic.py` (context-not-verdict; gBGC
-caveat gate) · `agents/methodologist.py` (selection triggered by ERC/RERconverge signal,
-not as primary) · scaling/batching in `agents/analyst.py` + `tools/genomic_data.py` +
+caveat gate) · `agents/methodologist.py` (selection triggered by the primary rate
+signal — ERC, RERconverge secondary — not as primary) · scaling/batching in `agents/analyst.py` + `tools/genomic_data.py` +
 container cache · optional codeml drill-down surface · `events.py` · frontend selection
 panel · tests + fixtures.
 
@@ -66,7 +66,7 @@ panel · tests + fixtures.
 
 ## Verification
 Selection tests run on signal-driving genes and emit JSON context; results **never**
-override the ERC/RERconverge primary score; the gBGC caveat surfaces on high-risk genes;
+override the primary score (ERC; RERconverge secondary); the gBGC caveat surfaces on high-risk genes;
 at small scale-up the pipeline stays honest (N/A where warranted) and performance is
 acceptable.
 

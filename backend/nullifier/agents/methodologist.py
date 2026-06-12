@@ -8,7 +8,6 @@ SUPPORTED_CONSTRUCTS = {
     for construct in (spec.get("constructs") or set())
 }
 DEFERRED_CONSTRUCTS = {
-    "phenotype_association": "Requires PGLS or an equivalent phylogenetic phenotype-association model.",
 }
 
 METHODOLOGIST_SPEC = AgentSpec(
@@ -67,26 +66,10 @@ def run_methodologist(
             "claim_constructs": sorted(claim_constructs),
             "rationale": "Construct-validity gate prevented mismatched statistical tests.",
         }
-    if "cross_lineage_rate_correlation" in claim_constructs:
-        return {
-            "tests_requested": [
-                {
-                    "test": "mirrortree_lite",
-                    "inputs": {
-                        "set_a": "starter",
-                        "background": "background.random_300",
-                        "min_shared_species": 5,
-                        "n_iter": 2000,
-                        "seed": 0,
-                    },
-                    "rationale": "Cross-lineage rate-correlation claims require per-lineage dN/dS covariation, not scalar set differences.",
-                }
-            ],
-            "primary_tests": [],
-            "correction": "none",
-            "claim_constructs": sorted(claim_constructs),
-            "rationale": "Use mirrortree-lite for the cross-lineage rate-correlation construct.",
-        }
+    deterministic = _deterministic_plan_for_constructs(claim_constructs, expansion)
+    if deterministic:
+        deterministic["claim_constructs"] = sorted(claim_constructs)
+        return deterministic
 
     user = _build_user_prompt(formalized, expansion, data_summary, completed_analysis or [])
     plan = llm_call_json("methodologist", METHODOLOGIST_SYSTEM, user, max_tokens=2500)
@@ -112,6 +95,72 @@ def run_methodologist(
     return plan
 
 
+def _deterministic_plan_for_constructs(claim_constructs: set[str], expansion: dict) -> dict | None:
+    tests_requested = []
+    primary_tests = []
+    rationale_bits = []
+
+    if "cross_lineage_rate_correlation" in claim_constructs:
+        erc_inputs = {
+            "set_a": "starter",
+            "set_b": _select_default_expanded_set(expansion),
+            "controls": _control_sets(expansion),
+            "background": "background.random_300",
+            "min_shared_branches": 5,
+            "n_iter": 2000,
+            "seed": 0,
+        }
+        tests_requested.extend([
+            {
+                "test": "erc",
+                "inputs": erc_inputs,
+                "rationale": "Cross-lineage rate-correlation claims require ERC on per-branch relative rates, not scalar set differences.",
+            },
+            {
+                "test": "mirrortree_lite",
+                "inputs": {
+                    "set_a": "starter",
+                    "set_b": _select_default_expanded_set(expansion),
+                    "background": "background.random_300",
+                    "min_shared_species": 5,
+                    "n_iter": 2000,
+                    "seed": 0,
+                },
+                "rationale": "Mirrortree-lite is retained as the NG86 cross-check for cross-lineage covariation.",
+            },
+        ])
+        primary_tests.append({
+                "test": "erc",
+                "inputs": {**erc_inputs, "n_iter": 500},
+        })
+        rationale_bits.append("Use ERC as the Stage-3 primary test and mirrortree-lite as the NG86 cross-check.")
+
+    if "phenotype_association" in claim_constructs:
+        rer_inputs = {
+            "sets": _phenotype_sets(expansion),
+            "controls": _control_sets(expansion),
+            "trait": "cortical_neurons",
+            "min_species": 20,
+            "secondary_to": "erc",
+            "require_primate_out": True,
+        }
+        tests_requested.append({
+            "test": "rerconverge",
+            "inputs": rer_inputs,
+            "rationale": "Cortical-neuron phenotype association is secondary/exploratory and must pass species-overlap and primate-out guards.",
+        })
+        rationale_bits.append("Run RERconverge only as a secondary cortical-neuron association check; ERC carries the verdict.")
+
+    if not tests_requested:
+        return None
+    return {
+        "tests_requested": tests_requested,
+        "primary_tests": primary_tests,
+        "correction": "none",
+        "rationale": " ".join(rationale_bits),
+    }
+
+
 def _claim_constructs(formalized: dict) -> set[str]:
     claims = formalized.get("atomic_claims") or []
     constructs = {
@@ -120,6 +169,25 @@ def _claim_constructs(formalized: dict) -> set[str]:
         if isinstance(claim, dict)
     }
     return constructs or {"set_difference"}
+
+
+def _select_default_expanded_set(expansion: dict) -> str | None:
+    names = list((expansion or {}).get("expanded") or {})
+    bbb = [name for name in names if "bbb" in name.lower()]
+    chosen = sorted(bbb or names)[0] if names else None
+    return f"expanded.{chosen}" if chosen else None
+
+
+def _control_sets(expansion: dict) -> list[str]:
+    return [f"controls.{name}" for name in sorted((expansion or {}).get("controls") or {})]
+
+
+def _phenotype_sets(expansion: dict) -> list[str]:
+    out = ["starter"]
+    default = _select_default_expanded_set(expansion)
+    if default:
+        out.append(default)
+    return out
 
 
 def _build_user_prompt(
@@ -158,7 +226,7 @@ def _build_user_prompt(
             "Liebeskind 2016 consensus). "
             "variables: same metrics as aligned vectors across gene_index. tables: typically empty. "
             "rate_vectors: panel-aligned per-lineage dN/dS vectors for mirrortree_lite, "
-            "with sets starter, expanded.<set>, and background.random_300."
+            "with sets starter, expanded.<set>, controls.<set>, and background.random_300."
         ),
         "prepared_groups": "\n".join(groups_lines) or "(none)",
         "prepared_variables": "\n".join(variables_lines) or "(none)",

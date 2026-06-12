@@ -6,6 +6,7 @@ from ..tools import ensembl
 from ..tools.gnomad import fetch_constraint
 from ..tools.phylo import lookup_phylo_age
 from ..tools.genomic_data import build_data, retrievable_summary
+from ..tools.rerconverge import run_rerconverge
 from ..tools.diagnostics import run_diagnostics, summarize_set_risk
 from ..tools.panels import mammal_panel
 from ..tools.compute import verify_reported_stats, _data_summary
@@ -459,6 +460,25 @@ def run_analyst(
         diagnostics=diagnostics,
         min_low_risk_genes=min_low_risk_genes,
     )
+    if "phenotype_association" in _claim_constructs(formalized):
+        phenotype_axis = (data.get("phenotypes") or {}).get("cortical_neurons") or {}
+        rerconverge_data = run_rerconverge(
+            rate_vectors=data.get("rate_vectors") or {},
+            trait_axis=phenotype_axis,
+            sets=_phenotype_sets(expansion),
+            controls=[f"controls.{name}" for name in sorted((expansion.get("controls") or {}))],
+            min_species=int(phenotype_axis.get("min_species") or 20),
+            use_cache=use_cache,
+        )
+        data["rerconverge"] = rerconverge_data
+        data.setdefault("provenance", {})["rerconverge"] = {
+            "status": rerconverge_data.get("status"),
+            "secondary": True,
+            "trait": rerconverge_data.get("trait"),
+            "underpowered": rerconverge_data.get("underpowered"),
+            "primate_confounded": rerconverge_data.get("primate_confounded"),
+            "overclaim_guard": rerconverge_data.get("overclaim_guard"),
+        }
     risk_filter = (data.get("rate_vectors") or {}).get("risk_filter") or {}
     for gene, scored in (risk_filter.get("genes") or {}).items():
         _emit(ev.diagnostics_risk_scored(
@@ -524,6 +544,26 @@ def _split_into_sets(formalized: dict, starter: list[str]) -> tuple[list[str], l
         max_tokens=1000,
     )
     return result.get("set_a", starter), result.get("set_b", [])
+
+
+def _claim_constructs(formalized: dict) -> set[str]:
+    claims = (formalized or {}).get("atomic_claims") or []
+    constructs = {
+        str((claim or {}).get("construct") or "set_difference")
+        for claim in claims
+        if isinstance(claim, dict)
+    }
+    return constructs or {"set_difference"}
+
+
+def _phenotype_sets(expansion: dict) -> list[str]:
+    out = ["starter"]
+    names = list((expansion or {}).get("expanded") or {})
+    bbb = [name for name in names if "bbb" in name.lower()]
+    chosen = sorted(bbb or names)[0] if names else None
+    if chosen:
+        out.append(f"expanded.{chosen}")
+    return out
 
 
 def _fetch_all_gene_data(

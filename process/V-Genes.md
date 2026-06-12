@@ -222,7 +222,7 @@ temp-dir + cache patterns to copy).
   meaningful once tests exist.
 - **Stage 3** — IQ-TREE/HyPhy per-branch relative rates + ERC on a curated ~50/50 set
   with matched controls + robustness.
-- **Stage 4** — RERconverge + operationalized complexity axis (start with EQ).
+- **Stage 4** — RERconverge (flagged secondary; ERC stays primary) over a cortical-neuron-number axis (Herculano-Houzel), with species-overlap + primate-confound constraints.
 - **Stage 5** — validation harness (§6) + weight calibration → promotes the axis from
   experimental to verdict-bearing.
 - **Stage 6** — HyPhy selection layer (aBSREL/BUSTED/RELAX), then scale gene-set size.

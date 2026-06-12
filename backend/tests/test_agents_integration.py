@@ -1,6 +1,6 @@
 """Smoke tests for agent/data handoff guards."""
 
-from nullifier.agents import analyst, formalizer, librarian, methodologist, skeptic
+from nullifier.agents import analyst, formalizer, interpreter, librarian, methodologist, skeptic
 from nullifier.agents.analyst import _filter_expansion_to_targets, _screen_comparable, _set_statistics, _set_usability
 from nullifier.agents.semantic import normalize_atomic_claim
 from nullifier.tools.genomic_data import build_data
@@ -213,7 +213,7 @@ def test_citation_similarity_rejects_wrong_domain_match():
     assert score < 0.35
 
 
-def test_methodologist_returns_mirrortree_for_cross_lineage_construct():
+def test_methodologist_returns_erc_for_cross_lineage_construct():
     plan = methodologist.run_methodologist(
         {
             "core_hypothesis": "co-evolution",
@@ -226,15 +226,71 @@ def test_methodologist_returns_mirrortree_for_cross_lineage_construct():
                 }
             ],
         },
-        {"starter_count": 2},
+        {
+            "starter": ["A", "B"],
+            "expanded": {"bbb.endothelial": ["C", "D"]},
+            "controls": {"matched": ["E", "F"]},
+        },
         {"groups": {}, "variables": {}, "n_genes": 0},
     )
 
     assert plan.get("untestable") is not True
-    assert plan["tests_requested"][0]["test"] == "mirrortree_lite"
+    assert plan["tests_requested"][0]["test"] == "erc"
+    assert plan["tests_requested"][0]["inputs"]["set_b"] == "expanded.bbb.endothelial"
+    assert plan["tests_requested"][0]["inputs"]["controls"] == ["controls.matched"]
     assert plan["tests_requested"][0]["inputs"]["background"] == "background.random_300"
     assert plan["claim_constructs"] == ["cross_lineage_rate_correlation"]
+    assert plan["primary_tests"][0]["test"] == "erc"
+
+
+def test_methodologist_routes_phenotype_association_to_secondary_rerconverge():
+    plan = methodologist.run_methodologist(
+        {
+            "core_hypothesis": "V genes track cortical neuron number",
+            "atomic_claims": [
+                {
+                    "id": "c1",
+                    "statement": "Rates associate with cortical neuron number",
+                    "null_hypothesis": "Rates do not associate with cortical neuron number",
+                    "construct": "phenotype_association",
+                }
+            ],
+        },
+        {
+            "starter": ["A", "B"],
+            "expanded": {"bbb.endothelial": ["C", "D"]},
+            "controls": {"matched": ["E", "F"]},
+        },
+        {"groups": {}, "variables": {}, "n_genes": 0},
+    )
+
+    assert plan.get("untestable") is not True
+    assert plan["tests_requested"][0]["test"] == "rerconverge"
+    assert plan["tests_requested"][0]["inputs"]["trait"] == "cortical_neurons"
+    assert plan["tests_requested"][0]["inputs"]["secondary_to"] == "erc"
     assert plan["primary_tests"] == []
+
+
+def test_methodologist_keeps_erc_primary_when_rerconverge_is_added():
+    plan = methodologist.run_methodologist(
+        {
+            "core_hypothesis": "V genes co-evolve and track cortical neuron number",
+            "atomic_claims": [
+                {"id": "c1", "construct": "cross_lineage_rate_correlation"},
+                {"id": "c2", "construct": "phenotype_association"},
+            ],
+        },
+        {
+            "starter": ["A", "B"],
+            "expanded": {"bbb": ["C", "D"]},
+            "controls": {"matched": ["E", "F"]},
+        },
+        {"groups": {}, "variables": {}, "n_genes": 0},
+    )
+
+    requested = [entry["test"] for entry in plan["tests_requested"]]
+    assert requested == ["erc", "mirrortree_lite", "rerconverge"]
+    assert [entry["test"] for entry in plan["primary_tests"]] == ["erc"]
 
 
 def test_build_data_attaches_filtered_rate_vectors():
@@ -287,6 +343,77 @@ def test_build_data_attaches_filtered_rate_vectors():
     assert vectors["provenance"]["source"] == "homology_pal2nal_ng86"
     assert data["provenance"]["rate_vectors"]["background_genes"] == 1
     assert data["provenance"]["rate_vectors"]["source"] == "homology_pal2nal_ng86"
+    assert data["phenotypes"]["cortical_neurons"]["name"] == "cortical_neurons"
+    assert data["provenance"]["phenotypes"]["cortical_neurons"]["overclaim_guard"]
+
+
+def test_build_data_prefers_branch_rate_vectors_for_stage3():
+    expansion = {
+        "starter": ["G1", "G2"],
+        "expanded": {"bbb": ["B1", "B2"]},
+        "controls": {"matched": ["C1", "C2"]},
+        "background": {"background.random_300": ["BG1"]},
+    }
+    gene_data = {g: {"orthologs": []} for g in ["G1", "G2", "B1", "B2", "C1", "C2", "BG1"]}
+    branch_rate_data = {
+        "G1": {"status": "computed", "rates": {"branch_1": 1.0, "branch_2": 2.0}},
+        "G2": {"status": "computed", "rates": {"branch_1": 1.1, "branch_2": 2.1}},
+        "B1": {"status": "computed", "rates": {"branch_1": 2.0, "branch_2": 4.0}},
+        "B2": {"status": "computed", "rates": {"branch_1": 2.1, "branch_2": 4.1}},
+        "C1": {"status": "computed", "rates": {"branch_1": 4.0, "branch_2": 1.0}},
+        "C2": {"status": "computed", "rates": {"branch_1": 1.0, "branch_2": 4.0}},
+        "BG1": {"status": "computed", "rates": {"branch_1": 0.5, "branch_2": 0.5}},
+    }
+
+    data = build_data(gene_data, expansion, branch_rate_data=branch_rate_data)
+    vectors = data["rate_vectors"]
+
+    assert vectors["panel"] == ["branch_1", "branch_2"]
+    assert vectors["sets"]["controls.matched"] == ["C1", "C2"]
+    assert vectors["rates"]["G1"] == [1.0, 2.0]
+    assert vectors["provenance"]["source"] == "iqtree_fixed_topology_relative_branch_rates"
+    assert data["provenance"]["rate_vectors"]["source"] == "iqtree_fixed_topology_relative_branch_rates"
+
+
+def test_interpreter_adds_rerconverge_association_guard(monkeypatch):
+    monkeypatch.setattr(
+        interpreter,
+        "llm_call_json",
+        lambda *args, **kwargs: {
+            "patterns_observed": [],
+            "outlier_genes": [],
+            "regulatory_overlap": {},
+            "reproducibility_check": [],
+            "limitations": [],
+            "overall_genomic_assessment": "inconclusive",
+            "assessment_justification": "secondary association only",
+        },
+    )
+    compute_results = {
+        "tests": [
+            {
+                "test": "rerconverge",
+                "available": True,
+                "effect_size": 0.3,
+                "effect_size_name": "abs_rer_trait_r_minus_control_mean_abs_r",
+                "ci_lower": None,
+                "ci_upper": None,
+                "details": {"secondary_to": "erc", "primate_confounded": False},
+                "secondary": True,
+            }
+        ],
+        "corrections_applied": [],
+        "data_summary": {},
+    }
+
+    out = interpreter.run_interpreter(
+        {"core_hypothesis": "h", "atomic_claims": []},
+        {"starter": []},
+        compute_results,
+        {},
+    )
+
+    assert any("not directional or causal" in limitation for limitation in out["limitations"])
 
 
 def test_analyst_comparability_screen_drops_low_coverage_but_keeps_starters(monkeypatch):

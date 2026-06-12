@@ -6,7 +6,9 @@ from nullifier.tools.diagnostics import (
     FP_RISK_WEIGHTS,
     RISK_TIER_EXCLUDED,
     RISK_TIER_FLAGGED,
+    assess_aligner_rate_sensitivity,
     fp_risk,
+    populate_result_changes_with_aligner,
     score_record,
     tier,
 )
@@ -54,6 +56,30 @@ def test_fp_risk_flags_aligner_sensitive_record():
     assert scored["risk"] == pytest.approx(FP_RISK_WEIGHTS["result_changes_with_aligner"])
     assert scored["tier"] == RISK_TIER_FLAGGED
     assert scored["calibration_state"] == "heuristic"
+
+
+def test_aligner_branch_rate_sensitivity_populates_risk_flag():
+    changed, note = assess_aligner_rate_sensitivity(
+        {"rates": {"b1": 1.0, "b2": 1.2, "b3": 0.8}},
+        {"rates": {"b1": 1.7, "b2": 1.2, "b3": 0.8}},
+    )
+
+    assert changed is True
+    assert "shared_branches=3" in note
+
+    diagnostics = populate_result_changes_with_aligner(
+        {"G1": {"alignment": {"result_changes_with_aligner": None}}},
+        {
+            "G1": {
+                "mafft": {"rates": {"b1": 1.0, "b2": 1.2, "b3": 0.8}},
+                "prank": {"rates": {"b1": 1.7, "b2": 1.2, "b3": 0.8}},
+            }
+        },
+    )
+
+    scored = score_record(diagnostics["G1"])
+    assert diagnostics["G1"]["alignment"]["result_changes_with_aligner"] is True
+    assert "result_changes_with_aligner" in scored["reasons"]
 
 
 def test_rate_vectors_exclude_high_risk_genes_before_scoring():

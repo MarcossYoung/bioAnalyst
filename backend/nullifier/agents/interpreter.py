@@ -2,6 +2,7 @@ from statistics import mean
 
 from ..tools.llm_client import llm_call_json
 from ..tools.diagnostics import FP_RISK_DISCLAIMER
+from ..tools.phenotypes import ASSOCIATION_ONLY_GUARD
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
 
@@ -29,6 +30,7 @@ INTERPRETER_SPEC = AgentSpec(
         "For PAML limitations, state that genes without sufficient alignment depth or successful codeml runs were excluded.",
         "Regulatory overlap is Jaccard-style and not statistically normalized.",
         "The tool is observational, not a phylogenetic comparative method.",
+        "When rerconverge is present, present it as secondary to ERC, surface underpowered/primate_confounded flags, and never claim causal co-evolution.",
         "Omit reproducibility_check (or return []) when no reproducibility section is present in the input.",
         "Every outlier_genes item must include non-empty gene, why_notable, and implication strings; omit the item if you cannot explain it.",
     ),
@@ -75,6 +77,8 @@ def run_interpreter(
         limitations = list(out.get("limitations") or [])
         if FP_RISK_DISCLAIMER not in limitations:
             limitations.append(FP_RISK_DISCLAIMER)
+        if _has_rerconverge(compute_results) and ASSOCIATION_ONLY_GUARD not in limitations:
+            limitations.append(ASSOCIATION_ONLY_GUARD)
         out["limitations"] = limitations
     return out
 
@@ -180,6 +184,19 @@ def _build_user_prompt(
             f"  set_survival: {risk_filter.get('sets', {})}\n"
         )
 
+    rer_block = ""
+    rer_tests = [t for t in tests if t.get("test") == "rerconverge"]
+    if rer_tests:
+        rer_block = "\nRERCONVERGE SECONDARY ASSOCIATION GUARD:\n"
+        rer_block += f"  guard: {ASSOCIATION_ONLY_GUARD}\n"
+        for t in rer_tests:
+            details = t.get("details") or {}
+            rer_block += (
+                f"  - available={t.get('available')} underpowered={t.get('underpowered', details.get('underpowered'))} "
+                f"primate_confounded={t.get('primate_confounded', details.get('primate_confounded'))} "
+                f"secondary_to={details.get('secondary_to') or details.get('primary_test') or 'erc'}\n"
+            )
+
     evidence_parts = [
         "DETERMINISTIC COMPUTE RESULTS:\n" + ("\n".join(test_lines) or "  (none)"),
         "CORRECTIONS APPLIED:\n" + ("\n".join(corr_lines) or "  (none)"),
@@ -196,6 +213,8 @@ def _build_user_prompt(
         evidence_parts.append(repro_block.strip())
     if risk_block.strip():
         evidence_parts.append(risk_block.strip())
+    if rer_block.strip():
+        evidence_parts.append(rer_block.strip())
     evidence_parts.append(
         "PER-GENE GENOMIC DATA:\n" + ("\n".join(per_gene_lines) or "  (no gene data)")
     )
@@ -220,3 +239,7 @@ def _build_user_prompt(
         ),
     )
     return task.render()
+
+
+def _has_rerconverge(compute_results: dict) -> bool:
+    return any((t or {}).get("test") == "rerconverge" for t in (compute_results or {}).get("tests") or [])

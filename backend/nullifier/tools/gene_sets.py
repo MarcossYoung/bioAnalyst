@@ -27,6 +27,7 @@ include for *this* hypothesis) routes through ``llm_call_json`` with the
 """
 from __future__ import annotations
 
+import json
 import pickle
 import time
 from pathlib import Path
@@ -41,6 +42,7 @@ from .panels import random_background_genes
 SYNGO_RELEASE = "1.3"
 SYNGO_DIR = Path(__file__).resolve().parents[3] / "syngo1.3_complete_data"
 SYNGO_CACHE = Path.home() / ".nullifier" / "gene_sets_cache.pkl"
+VGENES3_CURATED_PATH = Path(__file__).resolve().parents[1] / "data" / "v_genes3_curated_sets.json"
 
 # ── BBB cell-type marker panels (curated; cite in the panel) ────────────────
 # Endothelial: classical brain-EC markers (tight junctions, transporters, selectivity).
@@ -79,6 +81,13 @@ CONTROL_SETS: dict[str, list[str]] = {
         "YWHAZ", "UBC", "HMBS", "GUSB", "SDHA", "TFRC", "EEF1A1", "PUM1",
     ],
 }
+
+
+def load_vgenes3_curated_sets(path: Path | None = None) -> dict:
+    """Load the Stage-3 balanced BBB/synaptic ERC fixture."""
+    p = Path(path or VGENES3_CURATED_PATH)
+    with open(p, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 # ── SynGO parser ────────────────────────────────────────────────────────────
@@ -207,6 +216,22 @@ def _all_canonical_sets(syngo: dict) -> dict[str, dict]:
     for name, genes in CONTROL_SETS.items():
         out[f"control.{name}"] = {"genes": list(genes), "source": "Hardcoded control panel",
                                   "label": f"control.{name}"}
+    try:
+        curated = load_vgenes3_curated_sets()
+    except Exception:
+        curated = {}
+    for name, info in (curated.get("sets") or {}).items():
+        role = str((info or {}).get("role") or "")
+        genes = list((info or {}).get("genes") or [])
+        if not genes:
+            continue
+        prefix = "control" if role == "control" else "vgenes3"
+        label = f"{prefix}.{name}"
+        out[label] = {
+            "genes": genes,
+            "source": (info or {}).get("source") or curated.get("version") or "V-Genes3 curated",
+            "label": label,
+        }
     return out
 
 

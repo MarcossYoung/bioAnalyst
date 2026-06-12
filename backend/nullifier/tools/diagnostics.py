@@ -7,6 +7,7 @@ therefore skipped until Stage 3 can populate it from primary-test reruns.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
+import math
 from statistics import median
 from typing import Any
 
@@ -32,6 +33,7 @@ COLUMNS_MASKED_FRACTION_FLOOR = 0.20
 SATURATED_BRANCH_FRACTION_FLOOR = 0.50
 SURVIVING_BRANCHES_FLOOR = 5
 NG86_DIVERGENCE_FLOOR = 0.50
+ALIGNER_RATE_VECTOR_DELTA_FLOOR = 0.20
 
 FP_RISK_WEIGHTS = {
     "result_changes_with_aligner": RESULT_CHANGES_WITH_ALIGNER_WEIGHT,
@@ -239,6 +241,68 @@ def score_record(record: Any) -> dict:
         "reasons": reasons,
         "calibration_state": FP_RISK_CALIBRATION_STATE,
     }
+
+
+def _rate_mapping(result: Any) -> dict[str, float]:
+    if not isinstance(result, dict):
+        return {}
+    raw = result.get("rates") if isinstance(result.get("rates"), dict) else result
+    out: dict[str, float] = {}
+    for key, value in (raw or {}).items():
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v):
+            out[str(key)] = v
+    return out
+
+
+def assess_aligner_rate_sensitivity(
+    mafft_result: Any,
+    prank_result: Any,
+    *,
+    material_delta: float = ALIGNER_RATE_VECTOR_DELTA_FLOOR,
+) -> tuple[bool | None, str]:
+    """Compare MAFFT/PRANK relative branch-rate vectors.
+
+    Returns ``(None, note)`` when the comparison is not assessable, keeping the
+    Stage-2 risk term skipped rather than silently marking the gene stable.
+    """
+    mafft = _rate_mapping(mafft_result)
+    prank = _rate_mapping(prank_result)
+    shared = sorted(set(mafft) & set(prank))
+    if len(shared) < 3:
+        return None, "aligner branch-rate comparison unavailable: fewer than 3 shared branches"
+    deltas = [abs(mafft[b] - prank[b]) for b in shared]
+    mean_delta = sum(deltas) / len(deltas)
+    max_delta = max(deltas)
+    changed = mean_delta >= material_delta or max_delta >= material_delta * 2
+    return changed, (
+        f"MAFFT/PRANK relative branch-rate delta mean={mean_delta:.3f}, "
+        f"max={max_delta:.3f}, shared_branches={len(shared)}, threshold={material_delta:.3f}"
+    )
+
+
+def populate_result_changes_with_aligner(
+    diagnostics: dict[str, dict],
+    aligner_branch_rates: dict[str, dict],
+    *,
+    material_delta: float = ALIGNER_RATE_VECTOR_DELTA_FLOOR,
+) -> dict[str, dict]:
+    """Attach Stage-3 aligner sensitivity to existing GeneDiagnostics records."""
+    out = {gene: diagnostics_to_dict(record) for gene, record in (diagnostics or {}).items()}
+    for gene, pair in (aligner_branch_rates or {}).items():
+        record = out.setdefault(gene, GeneDiagnostics(gene=gene).to_dict())
+        alignment = record.setdefault("alignment", {})
+        changed, note = assess_aligner_rate_sensitivity(
+            (pair or {}).get("mafft"),
+            (pair or {}).get("prank"),
+            material_delta=material_delta,
+        )
+        alignment["result_changes_with_aligner"] = changed
+        alignment["result_changes_with_aligner_note"] = note
+    return out
 
 
 def summarize_set_risk(genes: list[str], diagnostics: dict | None, min_survivors: int) -> dict:

@@ -297,6 +297,48 @@ def test_mirrortree_lite_detects_known_cross_signal():
     assert result["details"]["null_n"] > 0
 
 
+def test_erc_detects_known_branch_rate_covariation():
+    rate_vectors = {
+        "panel": ["b1", "b2", "b3", "b4", "b5", "b6"],
+        "sets": {
+            "starter": ["A1", "A2"],
+            "expanded.bbb": ["B1", "B2"],
+            "controls.matched": ["C1", "C2", "C3", "C4"],
+            "background.random_300": ["BG1", "BG2"],
+        },
+        "rates": {
+            "A1": [1, 2, 3, 4, 5, 6],
+            "A2": [1.1, 2.1, 3.1, 4.1, 5.1, 6.1],
+            "B1": [2, 4, 6, 8, 10, 12],
+            "B2": [2.2, 4.1, 6.2, 8.1, 10.2, 12.1],
+            "C1": [6, 1, 5, 2, 4, 3],
+            "C2": [3, 6, 2, 5, 1, 4],
+            "C3": [2, 5, 1, 4, 6, 3],
+            "C4": [4, 2, 6, 1, 5, 3],
+            "BG1": [0, 0, 0, 0, 0, 0],
+            "BG2": [0, 0, 0, 0, 0, 0],
+        },
+        "provenance": {"source": "iqtree_fixed_topology_relative_branch_rates"},
+    }
+
+    result = c.erc(
+        rate_vectors,
+        {
+            "set_b": "expanded.bbb",
+            "controls": ["controls.matched"],
+            "min_shared_branches": 5,
+            "n_iter": 200,
+            "seed": 1,
+        },
+    )
+
+    assert_full_test_result(result)
+    assert result["available"] is True
+    assert result["statistic"] > 0.99
+    assert result["effect_size_name"] == "erc_r_minus_matched_control_mean_r"
+    assert result["details"]["null_n"] > 0
+
+
 def test_mirrortree_lite_skips_degraded_set():
     rate_vectors = {
         "panel": ["s1", "s2", "s3"],
@@ -357,6 +399,162 @@ def test_run_analysis_plan_dispatches_mirrortree_lite():
     assert len(out["tests"]) == 1
     assert_full_test_result(out["tests"][0])
     assert out["tests"][0]["test"] == "mirrortree_lite"
+
+
+def test_run_analysis_plan_dispatches_erc():
+    data = {
+        "rate_vectors": {
+            "panel": ["b1", "b2", "b3", "b4", "b5"],
+            "sets": {
+                "starter": ["A1", "A2"],
+                "expanded.bbb": ["B1", "B2"],
+                "controls.matched": ["C1", "C2"],
+            },
+            "rates": {
+                "A1": [1, 2, 3, 4, 5],
+                "A2": [1, 2.1, 3.1, 4.1, 5.1],
+                "B1": [2, 4, 6, 8, 10],
+                "B2": [2.2, 4.2, 6.2, 8.2, 10.2],
+                "C1": [5, 1, 4, 2, 3],
+                "C2": [3, 5, 1, 4, 2],
+            },
+            "provenance": {"source": "iqtree_fixed_topology_relative_branch_rates"},
+        }
+    }
+    plan = {"tests_requested": [
+        {"test": "erc", "inputs": {"set_b": "expanded.bbb", "controls": ["controls.matched"], "n_iter": 20}},
+    ]}
+
+    out = c.run_analysis_plan(plan, data)
+
+    assert len(out["tests"]) == 1
+    assert_full_test_result(out["tests"][0])
+    assert out["tests"][0]["test"] == "erc"
+
+
+def test_rerconverge_summarizes_secondary_container_result():
+    data = {
+        "phenotypes": {
+            "cortical_neurons": {
+                "name": "cortical_neurons",
+                "label": "Cortical neuron number",
+                "usable_species": 22,
+                "min_species": 20,
+                "underpowered": False,
+                "primate_coverage": 7,
+                "non_primate_coverage": 15,
+            }
+        },
+        "rerconverge": {
+            "status": "computed",
+            "trait": "cortical_neurons",
+            "set_results": {
+                "starter": {"r": 0.71, "p_value": 0.01, "n": 22},
+                "expanded.bbb": {"r": 0.55, "p_value": 0.04, "n": 22},
+            },
+            "control_results": {
+                "controls.matched": {"r": 0.20, "p_value": 0.3, "n": 22},
+            },
+            "primate_out_results": {
+                "starter": {"r": 0.52, "p_value": 0.08, "n": 15},
+            },
+            "secondary": True,
+            "method": "RERconverge rate-phenotype correlation",
+            "source": "rerconverge_container",
+        },
+    }
+
+    result = c.rerconverge_test(
+        {"sets": ["starter", "expanded.bbb"], "controls": ["controls.matched"]},
+        data,
+    )
+
+    assert_full_test_result(result)
+    assert result["available"] is True
+    assert result["secondary"] is True
+    assert result["primate_confounded"] is False
+    assert result["effect_size_name"] == "abs_rer_trait_r_minus_control_mean_abs_r"
+    assert result["effect_size"] == pytest.approx(0.51)
+    assert result["details"]["secondary_to"] == "erc"
+    assert "shared drivers" in result["warnings"][0]
+
+
+def test_rerconverge_reports_primate_confounded_association():
+    data = {
+        "phenotypes": {
+            "cortical_neurons": {
+                "name": "cortical_neurons",
+                "usable_species": 21,
+                "min_species": 20,
+                "underpowered": False,
+            }
+        },
+        "rerconverge": {
+            "status": "computed",
+            "set_results": {"starter": {"r": 0.80, "p_value": 0.005, "n": 21}},
+            "control_results": {"controls.matched": {"r": 0.10, "n": 21}},
+            "primate_out_results": {"starter": {"r": 0.10, "n": 14}},
+        },
+    }
+
+    result = c.rerconverge_test({"sets": ["starter"], "controls": ["controls.matched"]}, data)
+
+    assert_full_test_result(result)
+    assert result["available"] is True
+    assert result["primate_confounded"] is True
+    assert any("primate-confounded" in warning for warning in result["warnings"])
+
+
+def test_rerconverge_skips_underpowered_trait_axis():
+    data = {
+        "phenotypes": {
+            "cortical_neurons": {
+                "name": "cortical_neurons",
+                "usable_species": 12,
+                "min_species": 20,
+                "underpowered": True,
+                "reason": "only 12 panel species have cortical-neuron counts; need >= 20",
+            }
+        },
+        "rerconverge": {},
+    }
+
+    result = c.rerconverge_test({"sets": ["starter"], "trait": "cortical_neurons"}, data)
+
+    assert_full_test_result(result)
+    assert result["available"] is False
+    assert result["skipped"] is True
+    assert "need >= 20" in result["skip_reason"]
+    assert result["details"]["secondary"] is True
+
+
+def test_run_analysis_plan_dispatches_rerconverge():
+    data = {
+        "phenotypes": {
+            "cortical_neurons": {
+                "name": "cortical_neurons",
+                "usable_species": 20,
+                "min_species": 20,
+                "underpowered": False,
+            }
+        },
+        "rerconverge": {
+            "status": "computed",
+            "set_results": {"starter": {"r": 0.5, "p_value": 0.02, "n": 20}},
+            "control_results": {"controls.matched": {"r": 0.1, "n": 20}},
+            "primate_out_results": {"starter": {"survives": True, "r": 0.4, "n": 13}},
+        },
+    }
+    plan = {"tests_requested": [
+        {"test": "rerconverge", "inputs": {"sets": ["starter"], "controls": ["controls.matched"]}},
+    ]}
+
+    out = c.run_analysis_plan(plan, data)
+
+    assert len(out["tests"]) == 1
+    assert_full_test_result(out["tests"][0])
+    assert out["tests"][0]["test"] == "rerconverge"
+    assert out["data_summary"]["rerconverge"]["secondary"] is True
 
 
 def test_leave_one_out_skips_when_primary_tests_have_no_result():

@@ -62,6 +62,9 @@ dataset versions) · report (flip disclaimer) · tests.
    alignment-sensitivity + gBGC false-positive literature the spec gestures at). A
    literature-sourcing task.
 2. **Positive-set choice** — one tractable, well-documented published result to reproduce.
+   Favor an **ERC/selection** result over a rate-phenotype association: the Stage 4
+   RERconverge leg is underpowered (~15–25 species, primate-confounded), so a rate-phenotype
+   target would make the benchmark rest on the weakest part of the pipeline.
 3. **Separation metric + pass threshold** — define explicitly up front (recommend
    AUC ≥ a fixed threshold **and** positive recovered).
 

@@ -27,6 +27,8 @@ from typing import Callable
 import numpy as np
 from scipy import stats as sps
 
+from .phenotypes import ASSOCIATION_ONLY_GUARD, CORTICAL_NEURON_MIN_SPECIES, CORTICAL_NEURON_TRAIT
+
 ALPHA = 0.05
 
 TEST_RESULT_FIELDS = (
@@ -636,6 +638,12 @@ TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the sup
 - mirrortree_lite inputs: {"set_a": "starter", "set_b": "expanded.<name>", "background": "background.random_300"}.
   Use for cross_lineage_rate_correlation claims; reads data["rate_vectors"] and compares
   background-residualized cross-set per-lineage dN/dS covariation against a random-background null.
+- erc inputs: {"set_a": "starter", "set_b": "expanded.<name>", "controls": ["controls.<name>"], "background": "background.random_300"}.
+  Primary Stage-3 cross_lineage_rate_correlation test; reads branch-rate vectors when available,
+  compares background-residualized set-mean branch rates, and permutes matched controls.
+- rerconverge inputs: {"sets": ["starter", "expanded.<name>"], "controls": ["controls.<name>"], "trait": "cortical_neurons"}.
+  Secondary/exploratory Stage-4 phenotype-association test; reads precomputed container results,
+  requires >=20 species with cortical-neuron counts, and never overrides ERC.
 - Pairwise dN/dS is available as metric/variable "dnds" when homology alignments
   and CDS pass the NG86 estimator gates. For coordinated-rate hypotheses, request spearman with
   {"x": "dnds", "y": "<other aligned variable>"} or group tests with metric "dnds".
@@ -730,6 +738,225 @@ def _select_default_set(sets: dict, prefix: str) -> str | None:
     return sorted(bbb or names)[0]
 
 
+def _usable_set_failure(rate_vectors: dict, names: list[str]) -> tuple[str, dict] | None:
+    set_usability = (rate_vectors or {}).get("set_usability") or {}
+    degraded = [
+        (name, set_usability.get(name) or {})
+        for name in names
+        if name in set_usability and not (set_usability.get(name) or {}).get("usable", True)
+    ]
+    if not degraded:
+        return None
+    reason = "; ".join(
+        f"set {name} degraded: too few genes survive FP-risk filter"
+        if meta.get("risk_degraded")
+        else f"{name}: {meta.get('reason') or 'degraded rate coverage'}"
+        for name, meta in degraded
+    )
+    return reason, {name: meta for name, meta in degraded}
+
+
+def _mean_rate_vector(residualized: dict, genes: list[str]) -> tuple[list[float | None], int]:
+    rates = residualized.get("rates") or {}
+    panel = residualized.get("panel") or []
+    out: list[float | None] = []
+    contributors = set()
+    for i in range(len(panel)):
+        vals = []
+        for gene in genes or []:
+            vector = rates.get(gene)
+            if not vector or i >= len(vector):
+                continue
+            value = vector[i]
+            if value is None:
+                continue
+            try:
+                f = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(f):
+                vals.append(f)
+                contributors.add(gene)
+        out.append(float(np.mean(vals)) if vals else None)
+    return out, len(contributors)
+
+
+def _bootstrap_erc_ci(
+    residualized: dict,
+    genes_a: list[str],
+    genes_b: list[str],
+    *,
+    min_shared: int,
+    n_iter: int = 500,
+    seed: int = 0,
+) -> list[float] | dict:
+    if len(genes_a) < 2 or len(genes_b) < 2:
+        return _ci_unavailable("need >=2 genes per set for ERC bootstrap CI")
+    rng = np.random.default_rng(seed)
+    vals = []
+    for _ in range(n_iter):
+        sample_a = rng.choice(genes_a, size=len(genes_a), replace=True).tolist()
+        sample_b = rng.choice(genes_b, size=len(genes_b), replace=True).tolist()
+        mean_a, _ = _mean_rate_vector(residualized, sample_a)
+        mean_b, _ = _mean_rate_vector(residualized, sample_b)
+        r, _ = _vector_corr(mean_a, mean_b, min_shared=min_shared)
+        if r is not None:
+            vals.append(r)
+    if not vals:
+        return _ci_unavailable("bootstrap resamples had insufficient shared branches")
+    lo, hi = np.percentile(vals, [2.5, 97.5])
+    return [_round(lo), _round(hi)]
+
+
+def erc(rate_vectors: dict, inputs: dict | None = None) -> dict:
+    inputs = inputs or {}
+    sets = (rate_vectors or {}).get("sets") or {}
+    set_a_name = inputs.get("set_a") or "starter"
+    set_b_name = inputs.get("set_b") or _select_default_set(sets, "expanded.")
+    background_name = inputs.get("background") or "background.random_300"
+    controls_in = inputs.get("controls")
+    control_names = (
+        [str(c) for c in controls_in]
+        if isinstance(controls_in, (list, tuple))
+        else ([str(controls_in)] if isinstance(controls_in, str) else sorted(k for k in sets if k.startswith("controls.")))
+    )
+    min_shared = int(inputs.get("min_shared_branches") or inputs.get("min_shared_species") or 5)
+    n_iter = int(inputs.get("n_iter") or 2000)
+    seed = int(inputs.get("seed") or 0)
+
+    if not rate_vectors or not sets:
+        return _test_result("erc", available=False, skipped=True,
+                            skip_reason="rate_vectors data unavailable",
+                            ci=_ci_unavailable("test skipped"))
+    missing = [name for name in [set_a_name, set_b_name] if not name or name not in sets]
+    if missing:
+        return _test_result(
+            "erc", available=False, skipped=True,
+            skip_reason="set_a or set_b not available in rate_vectors",
+            details={"set_a": set_a_name, "set_b": set_b_name, "available_sets": sorted(sets)},
+            ci=_ci_unavailable("test skipped"),
+        )
+    control_names = [name for name in control_names if name in sets]
+    if not control_names:
+        return _test_result(
+            "erc", available=False, skipped=True,
+            skip_reason="matched control sets not available in rate_vectors",
+            details={"available_sets": sorted(sets)},
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    degraded = _usable_set_failure(rate_vectors, [set_a_name, set_b_name] + control_names)
+    if degraded:
+        reason, meta = degraded
+        return _test_result(
+            "erc", available=False, skipped=True,
+            skip_reason=f"ERC refused because {reason}",
+            details={"set_usability": meta},
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    residualized = residualize_rate_vectors(rate_vectors, background_name) if background_name in sets else {
+        "panel": list((rate_vectors or {}).get("panel") or []),
+        "sets": sets,
+        "rates": (rate_vectors or {}).get("rates") or {},
+        "background_means": [],
+        "background_set": None,
+        "background_gene_count": 0,
+    }
+    set_a = [g for g in sets.get(set_a_name, []) if g in (residualized.get("rates") or {})]
+    set_b = [g for g in sets.get(set_b_name, []) if g in (residualized.get("rates") or {})]
+    controls = [g for name in control_names for g in sets.get(name, []) if g in (residualized.get("rates") or {})]
+
+    mean_a, contributors_a = _mean_rate_vector(residualized, set_a)
+    mean_b, contributors_b = _mean_rate_vector(residualized, set_b)
+    observed_r, shared = _vector_corr(mean_a, mean_b, min_shared=min_shared)
+    if observed_r is None:
+        return _test_result(
+            "erc", available=False, skipped=True,
+            skip_reason="set-mean branch-rate vectors had too few shared non-constant branches",
+            details={
+                "set_a": set_a_name,
+                "set_b": set_b_name,
+                "contributors": {"set_a": contributors_a, "set_b": contributors_b},
+                "shared_branches": shared,
+                "min_shared_branches": min_shared,
+            },
+            ci=_ci_unavailable("test skipped"),
+        )
+    if len(controls) < max(1, len(set_b)):
+        return _test_result(
+            "erc", available=False, skipped=True,
+            skip_reason="not enough matched-control genes for ERC permutation",
+            details={"control_gene_count": len(controls), "required": len(set_b), "control_sets": control_names},
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    rng = np.random.default_rng(seed)
+    null_values = []
+    sample_size = max(1, len(set_b))
+    for _ in range(n_iter):
+        sample_b = rng.choice(controls, size=sample_size, replace=False).tolist()
+        mean_ctrl, _ = _mean_rate_vector(residualized, sample_b)
+        r, _ = _vector_corr(mean_a, mean_ctrl, min_shared=min_shared)
+        if r is not None:
+            null_values.append(r)
+    p_value = (
+        (sum(1 for v in null_values if abs(v) >= abs(observed_r)) + 1) / (len(null_values) + 1)
+        if null_values else None
+    )
+    null_mean = float(np.mean(null_values)) if null_values else None
+    effect = observed_r - null_mean if null_mean is not None else observed_r
+    ci = _bootstrap_erc_ci(
+        residualized,
+        set_a,
+        set_b,
+        min_shared=min_shared,
+        n_iter=min(500, n_iter),
+        seed=seed + 1,
+    )
+    provenance = (rate_vectors or {}).get("provenance") or {}
+    warnings = []
+    if provenance.get("source") != "iqtree_fixed_topology_relative_branch_rates":
+        warnings.append("ERC is running on fallback rate vectors; Stage-3 branch-rate estimates were not available.")
+    if background_name not in sets:
+        warnings.append("No background set was available for residualization; ERC used raw relative rates.")
+
+    return _test_result(
+        "erc",
+        n=int(shared),
+        statistic=observed_r,
+        p_value=p_value,
+        significant=bool(p_value is not None and p_value < ALPHA),
+        effect_size=effect,
+        effect_size_name="erc_r_minus_matched_control_mean_r",
+        ci=ci,
+        method="ERC: Pearson correlation of background-residualized set-mean per-branch relative rates with matched-control permutation",
+        inputs={
+            "set_a": set_a_name,
+            "set_b": set_b_name,
+            "controls": control_names,
+            "background": background_name if background_name in sets else None,
+            "min_shared_branches": min_shared,
+            "n_iter": n_iter,
+            "seed": seed,
+        },
+        details={
+            "panel": residualized.get("panel"),
+            "shared_branches": shared,
+            "contributors": {"set_a": contributors_a, "set_b": contributors_b},
+            "background_gene_count": residualized.get("background_gene_count"),
+            "control_gene_count": len(controls),
+            "null_n": len(null_values),
+            "null_mean": null_mean,
+            "null_p025": float(np.percentile(null_values, 2.5)) if null_values else None,
+            "null_p975": float(np.percentile(null_values, 97.5)) if null_values else None,
+            "set_sizes": {"set_a": len(set_a), "set_b": len(set_b), "controls": len(controls)},
+            "rate_vector_source": provenance.get("source"),
+        },
+        warnings=warnings,
+    )
+
+
 def mirrortree_lite(rate_vectors: dict, inputs: dict | None = None) -> dict:
     inputs = inputs or {}
     sets = (rate_vectors or {}).get("sets") or {}
@@ -759,23 +986,13 @@ def mirrortree_lite(rate_vectors: dict, inputs: dict | None = None) -> dict:
             ci=_ci_unavailable("test skipped"),
         )
 
-    set_usability = (rate_vectors or {}).get("set_usability") or {}
-    degraded = [
-        (name, set_usability.get(name) or {})
-        for name in (set_a_name, set_b_name)
-        if name in set_usability and not (set_usability.get(name) or {}).get("usable", True)
-    ]
+    degraded = _usable_set_failure(rate_vectors, [set_a_name, set_b_name])
     if degraded:
-        reason = "; ".join(
-            f"set {name} degraded: too few genes survive FP-risk filter"
-            if meta.get("risk_degraded")
-            else f"{name}: {meta.get('reason') or 'degraded dN/dS coverage'}"
-            for name, meta in degraded
-        )
+        reason, meta = degraded
         return _test_result(
             "mirrortree_lite", available=False, skipped=True,
             skip_reason=f"cross-set comparison refused because {reason}",
-            details={"set_usability": {name: meta for name, meta in degraded}},
+            details={"set_usability": meta},
             ci=_ci_unavailable("test skipped"),
         )
 
@@ -851,10 +1068,211 @@ def mirrortree_lite(rate_vectors: dict, inputs: dict | None = None) -> dict:
     )
 
 
+def rerconverge_test(inputs: dict | None, data: dict | None = None) -> dict:
+    """Summarize precomputed RERconverge container results as a secondary test."""
+    inputs = inputs or {}
+    data = data or {}
+    trait_name = inputs.get("trait") or CORTICAL_NEURON_TRAIT
+    min_species = int(inputs.get("min_species") or CORTICAL_NEURON_MIN_SPECIES)
+    trait_axis = ((data.get("phenotypes") or {}).get(trait_name) or {})
+    requested_sets = [
+        str(s) for s in (inputs.get("sets") or inputs.get("test_sets") or ["starter"])
+        if s
+    ]
+    control_names = [
+        str(s) for s in (inputs.get("controls") or [])
+        if s
+    ]
+
+    if not trait_axis:
+        return _test_result(
+            "rerconverge",
+            available=False,
+            skipped=True,
+            skip_reason=f"phenotype axis '{trait_name}' unavailable",
+            method="RERconverge rate-phenotype correlation",
+            inputs={"sets": requested_sets, "controls": control_names, "trait": trait_name, "min_species": min_species},
+            details={"secondary": True, "primary_test": "erc", "overclaim_guard": ASSOCIATION_ONLY_GUARD},
+            warnings=[ASSOCIATION_ONLY_GUARD, "RERconverge is secondary; ERC carries the coordinated-rate verdict."],
+            ci=_ci_unavailable("test skipped"),
+        )
+    if bool(trait_axis.get("underpowered")) or int(trait_axis.get("usable_species") or 0) < min_species:
+        return _test_result(
+            "rerconverge",
+            available=False,
+            skipped=True,
+            skip_reason=trait_axis.get("reason") or f"need >= {min_species} species with cortical-neuron counts",
+            method="RERconverge rate-phenotype correlation",
+            inputs={"sets": requested_sets, "controls": control_names, "trait": trait_name, "min_species": min_species},
+            details={
+                "secondary": True,
+                "primary_test": "erc",
+                "trait": _trait_summary(trait_axis),
+                "overclaim_guard": ASSOCIATION_ONLY_GUARD,
+            },
+            warnings=[
+                ASSOCIATION_ONLY_GUARD,
+                "RERconverge is secondary; ERC carries the coordinated-rate verdict.",
+                "Phenotype association is underpowered and reported as N/A.",
+            ],
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    rer = data.get("rerconverge") or {}
+    if not rer or rer.get("status") != "computed":
+        return _test_result(
+            "rerconverge",
+            available=False,
+            skipped=True,
+            skip_reason=(rer or {}).get("error") or "containerized RERconverge results unavailable",
+            method="RERconverge rate-phenotype correlation",
+            inputs={"sets": requested_sets, "controls": control_names, "trait": trait_name, "min_species": min_species},
+            details={
+                "secondary": True,
+                "primary_test": "erc",
+                "container_status": rer.get("status"),
+                "trait": _trait_summary(trait_axis),
+                "overclaim_guard": ASSOCIATION_ONLY_GUARD,
+            },
+            warnings=[ASSOCIATION_ONLY_GUARD, "RERconverge is secondary; ERC carries the coordinated-rate verdict."],
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    set_results = rer.get("set_results") or {}
+    control_results = rer.get("control_results") or {}
+    chosen = _best_rer_result(set_results, requested_sets)
+    if not chosen:
+        return _test_result(
+            "rerconverge",
+            available=False,
+            skipped=True,
+            skip_reason="requested RERconverge set results unavailable",
+            method=rer.get("method") or "RERconverge rate-phenotype correlation",
+            inputs={"sets": requested_sets, "controls": control_names, "trait": trait_name, "min_species": min_species},
+            details={"available_sets": sorted(set_results), "secondary": True, "primary_test": "erc"},
+            warnings=[ASSOCIATION_ONLY_GUARD, "RERconverge is secondary; ERC carries the coordinated-rate verdict."],
+            ci=_ci_unavailable("test skipped"),
+        )
+
+    set_name, result = chosen
+    control_values = [
+        abs(float(r.get("r")))
+        for name, r in control_results.items()
+        if (not control_names or name in control_names) and r.get("r") is not None
+    ]
+    control_mean_abs = float(np.mean(control_values)) if control_values else None
+    observed_r = _float_or_none(result.get("r"))
+    p_value = _float_or_none(result.get("p_value"))
+    effect = (
+        abs(observed_r) - control_mean_abs
+        if observed_r is not None and control_mean_abs is not None
+        else None
+    )
+    primate_out_result = (rer.get("primate_out_results") or {}).get(set_name)
+    primate_confounded, primate_note = _primate_confounded(observed_r, primate_out_result)
+    warnings = [ASSOCIATION_ONLY_GUARD, "RERconverge is secondary; ERC carries the coordinated-rate verdict."]
+    if primate_confounded is True:
+        warnings.append("Association does not pass primate-out sensitivity; report as primate-confounded.")
+    elif primate_confounded is None:
+        warnings.append(primate_note or "Primate-out sensitivity result unavailable.")
+
+    return _test_result(
+        "rerconverge",
+        n=result.get("n"),
+        statistic=observed_r,
+        p_value=p_value,
+        significant=bool(p_value is not None and p_value < ALPHA),
+        effect_size=effect,
+        effect_size_name="abs_rer_trait_r_minus_control_mean_abs_r",
+        ci=_ci_unavailable("container result does not provide a confidence interval"),
+        method=rer.get("method") or "RERconverge rate-phenotype correlation",
+        inputs={"sets": requested_sets, "controls": control_names, "trait": trait_name, "min_species": min_species},
+        details={
+            "secondary": True,
+            "secondary_to": "erc",
+            "primary_test": "erc",
+            "trait": _trait_summary(trait_axis),
+            "chosen_set": set_name,
+            "set_results": set_results,
+            "control_results": control_results,
+            "control_mean_abs_r": control_mean_abs,
+            "primate_out_result": primate_out_result,
+            "primate_confounded": primate_confounded,
+            "underpowered": bool(rer.get("underpowered") or trait_axis.get("underpowered")),
+            "source": rer.get("source"),
+            "tool_versions": rer.get("tool_versions") or {},
+            "overclaim_guard": rer.get("overclaim_guard") or ASSOCIATION_ONLY_GUARD,
+        },
+        warnings=warnings,
+        secondary=True,
+        underpowered=bool(rer.get("underpowered") or trait_axis.get("underpowered")),
+        primate_confounded=primate_confounded,
+    )
+
+
+def _trait_summary(axis: dict) -> dict:
+    return {
+        "name": axis.get("name"),
+        "label": axis.get("label"),
+        "usable_species": axis.get("usable_species"),
+        "min_species": axis.get("min_species"),
+        "underpowered": axis.get("underpowered"),
+        "primate_coverage": axis.get("primate_coverage"),
+        "non_primate_coverage": axis.get("non_primate_coverage"),
+        "quality_counts": axis.get("quality_counts", {}),
+    }
+
+
+def _best_rer_result(results: dict, requested_sets: list[str]) -> tuple[str, dict] | None:
+    candidates = []
+    for name in requested_sets:
+        result = results.get(name)
+        r = _float_or_none((result or {}).get("r"))
+        if result and r is not None:
+            candidates.append((abs(r), name, result))
+    if not candidates:
+        return None
+    _, name, result = sorted(candidates, reverse=True)[0]
+    return name, result
+
+
+def _primate_confounded(observed_r, primate_out_result: dict | None) -> tuple[bool | None, str | None]:
+    if not primate_out_result:
+        return None, "Primate-out sensitivity result unavailable."
+    if "survives" in primate_out_result:
+        return (not bool(primate_out_result.get("survives"))), None
+    primate_r = _float_or_none(primate_out_result.get("r"))
+    if observed_r is None or primate_r is None:
+        return None, "Primate-out sensitivity result lacks a comparable correlation."
+    same_sign = (observed_r == 0 and primate_r == 0) or (observed_r > 0) == (primate_r > 0)
+    survives = same_sign and abs(primate_r) >= 0.5 * abs(observed_r)
+    return (not survives), None
+
+
+def _float_or_none(value):
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
 TEST_LIBRARY["mirrortree_lite"] = {
     "fn": mirrortree_lite,
     "kind": "rate_vectors",
     "constructs": {"cross_lineage_rate_correlation"},
+}
+
+TEST_LIBRARY["erc"] = {
+    "fn": erc,
+    "kind": "rate_vectors",
+    "constructs": {"cross_lineage_rate_correlation"},
+}
+
+TEST_LIBRARY["rerconverge"] = {
+    "fn": rerconverge_test,
+    "kind": "rerconverge",
+    "constructs": {"phenotype_association"},
 }
 
 
@@ -934,6 +1352,8 @@ def _run_one(name: str, inputs: dict, data: dict) -> dict:
             return fn(inputs, data)
         if kind == "rate_vectors":
             return fn((data or {}).get("rate_vectors") or {}, inputs)
+        if kind == "rerconverge":
+            return fn(inputs, data)
     except Exception as e:  # never let a bad plan crash the pipeline
         return _test_result(name or "unknown_test", error=f"{type(e).__name__}: {e}", inputs=inputs)
     return _test_result(name or "unknown_test", error="unhandled test kind", inputs=inputs)
@@ -949,6 +1369,8 @@ def _closest_alternative(name: str) -> str:
         return "spearman or pearson"
     if "pgls" in n or "phylo" in n or "paml" in n or "codeml" in n:
         return "use paml_branch_model (branch model 2 LRT, requires codeml in PATH)"
+    if "phenotype" in n or "rer" in n:
+        return "rerconverge (secondary phenotype-association summary)"
     return f"none of the {len(TEST_LIBRARY)} library tests match; pick one of: {', '.join(TEST_LIBRARY)}"
 
 
@@ -979,6 +1401,27 @@ def _data_summary(data: dict) -> dict:
                 "excluded_genes": (rate_vectors.get("risk_filter") or {}).get("excluded_genes", []),
                 "sets": (rate_vectors.get("risk_filter") or {}).get("sets", {}),
             }
+    phenotypes = data.get("phenotypes") or {}
+    if phenotypes:
+        out["phenotypes"] = {
+            name: {
+                "usable_species": axis.get("usable_species"),
+                "min_species": axis.get("min_species"),
+                "underpowered": axis.get("underpowered"),
+                "primate_coverage": axis.get("primate_coverage"),
+                "non_primate_coverage": axis.get("non_primate_coverage"),
+            }
+            for name, axis in phenotypes.items()
+        }
+    rer = data.get("rerconverge") or {}
+    if rer:
+        out["rerconverge"] = {
+            "status": rer.get("status"),
+            "trait": rer.get("trait"),
+            "secondary": True,
+            "underpowered": rer.get("underpowered"),
+            "primate_confounded": rer.get("primate_confounded"),
+        }
     gnomad_prov = (data.get("provenance") or {}).get("gnomad")
     if gnomad_prov:
         out["gnomad_coverage"] = gnomad_prov

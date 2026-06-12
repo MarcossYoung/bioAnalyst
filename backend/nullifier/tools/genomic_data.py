@@ -15,6 +15,8 @@ from .diagnostics import (
     diagnostics_to_dict,
     score_record,
 )
+from .branch_rates import BRANCH_RATE_SOURCE
+from .phenotypes import build_cortical_neuron_axis
 
 
 METRICS = ("dnds", "ortholog_count", "paralog_count", "duplication_count",
@@ -78,7 +80,7 @@ def _one2one_panel_species(record: dict, panel_set: set[str]) -> set[str]:
     return out
 
 
-def _rate_value(value):
+def _rate_value(value, *, drop_saturated: bool = True):
     if value is None:
         return None
     try:
@@ -87,26 +89,56 @@ def _rate_value(value):
         return None
     if v < 0 or v >= 10:
         return None
-    if abs(v - 1.0) < 0.01:
+    if drop_saturated and abs(v - 1.0) < 0.01:
         return None
     return v
+
+
+def _coerce_branch_rate_mapping(value) -> dict[str, float]:
+    if not isinstance(value, dict):
+        return {}
+    raw = value.get("rates") if isinstance(value.get("rates"), dict) else value
+    out: dict[str, float] = {}
+    for branch, rate in (raw or {}).items():
+        cleaned = _rate_value(rate, drop_saturated=False)
+        if cleaned is not None:
+            out[str(branch)] = cleaned
+    return out
+
+
+def _branch_rate_panel(branch_rate_data: dict | None, panel: list[str] | None = None) -> list[str]:
+    if panel:
+        return [str(s).lower() for s in panel]
+    seen: set[str] = set()
+    out: list[str] = []
+    for result in (branch_rate_data or {}).values():
+        for branch in _coerce_branch_rate_mapping(result):
+            key = str(branch).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+    return out
 
 
 def per_gene_rate_vectors(
     gene_data: dict,
     expansion: dict,
     rdnds_data: dict | None = None,
+    branch_rate_data: dict | None = None,
     panel: list[str] | None = None,
     diagnostics: dict | None = None,
     min_low_risk_genes: int = 2,
 ) -> dict:
-    """Build panel-aligned per-lineage dN/dS vectors for mirrortree-lite.
+    """Build panel-aligned per-lineage rate vectors for mirrortree-lite/ERC.
 
     This is deliberately parallel to scalar ``per_gene_metrics``: it does not
-    collapse across species and it filters to one-to-one orthologs in the fixed
-    panel before attaching rates.
+    collapse across branches. When Stage-3 branch rates are supplied, they are
+    used directly. Otherwise the v7 NG86 one-to-one ortholog vectors are used as
+    a lower-tier mirrortree cross-check.
     """
-    panel = [str(s).lower() for s in (panel or mammal_panel())]
+    using_branch_rates = bool(branch_rate_data)
+    panel = _branch_rate_panel(branch_rate_data, panel) if using_branch_rates else [str(s).lower() for s in (panel or mammal_panel())]
     panel_set = set(panel)
     rates: dict[str, list[float | None]] = {}
     coverage: dict[str, dict] = {}
@@ -124,6 +156,7 @@ def per_gene_rate_vectors(
     for pool in (
         [expansion.get("starter") or []]
         + list((expansion.get("expanded") or {}).values())
+        + list((expansion.get("controls") or {}).values())
         + list((expansion.get("background") or {}).values())
     ):
         for gene in pool:
@@ -154,15 +187,24 @@ def per_gene_rate_vectors(
             }
             continue
         record = gene_data.get(gene) or {}
-        species_values = {str(k).lower(): v for k, v in ((rdnds_data or {}).get(gene) or {}).items()}
-        allowed_species = _one2one_panel_species(record, panel_set)
-        vector = [
-            _rate_value(species_values.get(species)) if species in allowed_species else None
-            for species in panel
-        ]
+        if using_branch_rates:
+            branch_values = {
+                str(k).lower(): v
+                for k, v in _coerce_branch_rate_mapping((branch_rate_data or {}).get(gene)).items()
+            }
+            vector = [_rate_value(branch_values.get(branch), drop_saturated=False) for branch in panel]
+            one2one_count = None
+        else:
+            species_values = {str(k).lower(): v for k, v in ((rdnds_data or {}).get(gene) or {}).items()}
+            allowed_species = _one2one_panel_species(record, panel_set)
+            vector = [
+                _rate_value(species_values.get(species)) if species in allowed_species else None
+                for species in panel
+            ]
+            one2one_count = len(allowed_species)
         rates[gene] = vector
         coverage[gene] = {
-            "one2one_panel_species": len(allowed_species),
+            "one2one_panel_species": one2one_count,
             "usable_rates": sum(1 for v in vector if v is not None),
             "risk": risk_filter["genes"].get(gene),
         }
@@ -170,6 +212,8 @@ def per_gene_rate_vectors(
     sets = {"starter": list(expansion.get("starter") or [])}
     for name, genes in (expansion.get("expanded") or {}).items():
         sets[f"expanded.{name}"] = list(genes)
+    for name, genes in (expansion.get("controls") or {}).items():
+        sets[f"controls.{name}"] = list(genes)
     for name, genes in (expansion.get("background") or {}).items():
         sets[name] = list(genes)
 
@@ -188,13 +232,17 @@ def per_gene_rate_vectors(
         excluded_genes = [g for g in genes if g in excluded_by_risk]
         flagged_genes = [g for g in genes if g in risk_filter["flagged_genes"]]
         risk_degraded = bool(risk_scored and len(survivors) < int(min_low_risk_genes))
-        dnds_degraded = not (len(survivors) > 0 and genes_with_rates >= min(2, len(survivors)) and usable_rates >= 5)
-        usable = not risk_degraded and not dnds_degraded
+        rate_degraded = not (len(survivors) > 0 and genes_with_rates >= min(2, len(survivors)) and usable_rates >= 5)
+        usable = not risk_degraded and not rate_degraded
         reason = ""
         if risk_degraded:
             reason = "too few genes survive FP-risk filter"
-        elif dnds_degraded:
-            reason = "too few genes/species have computable non-saturated dN/dS rates"
+        elif rate_degraded:
+            reason = (
+                "too few genes/branches have computable branch rates"
+                if using_branch_rates
+                else "too few genes/species have computable non-saturated dN/dS rates"
+            )
         set_usability[name] = {
             "usable": usable,
             "reason": reason,
@@ -202,7 +250,8 @@ def per_gene_rate_vectors(
             "survivor_count": len(survivors),
             "genes_with_rates": genes_with_rates,
             "usable_rates": usable_rates,
-            "dnds_degraded": dnds_degraded,
+            "dnds_degraded": rate_degraded,
+            "rate_degraded": rate_degraded,
             "risk_degraded": risk_degraded,
             "risk_scored_count": len(risk_scored),
             "risk_flagged_genes": flagged_genes,
@@ -227,10 +276,11 @@ def per_gene_rate_vectors(
         "set_usability": set_usability,
         "risk_filter": risk_filter,
         "provenance": {
-            "source": "homology_pal2nal_ng86",
+            "source": BRANCH_RATE_SOURCE if using_branch_rates else "homology_pal2nal_ng86",
             "ortholog_filter": "ortholog_one2one",
-            "saturation_filter": "drop abs(dnds - 1.0) < 0.01 and dnds >= 10",
+            "saturation_filter": "not applicable to model-based branch rates" if using_branch_rates else "drop abs(dnds - 1.0) < 0.01 and dnds >= 10",
             "background_set": "background.random_300",
+            "estimator": "per-branch relative rates with gene-wide rate removed" if using_branch_rates else "pairwise NG86 dN/dS",
             "fp_risk": {
                 "weights": dict(FP_RISK_WEIGHTS),
                 "calibration_state": FP_RISK_CALIBRATION_STATE,
@@ -243,8 +293,11 @@ def per_gene_rate_vectors(
 def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                gnomad_data: dict | None = None, phylo_data: dict | None = None,
                paml_data: dict | None = None, rdnds_data: dict | None = None,
+               branch_rate_data: dict | None = None,
                panel: list[str] | None = None, diagnostics: dict | None = None,
-               min_low_risk_genes: int = 2) -> dict:
+               min_low_risk_genes: int = 2,
+               phenotype_axes: dict | None = None,
+               rerconverge_data: dict | None = None) -> dict:
     """Build the ``data`` dict shape ``compute.run_analysis_plan`` expects.
 
     groups: one per starter / expanded.<set> / controls.<set>, each carrying every
@@ -297,17 +350,25 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
     rate_vectors = per_gene_rate_vectors(
         gene_data,
         expansion,
-        rdnds_data,
-        panel,
+        rdnds_data=rdnds_data,
+        branch_rate_data=branch_rate_data,
+        panel=panel,
         diagnostics=diagnostics,
         min_low_risk_genes=min_low_risk_genes,
     )
+    phenotype_panel = list(rate_vectors.get("panel") or panel or [])
+    phenotypes = phenotype_axes or {
+        "cortical_neurons": build_cortical_neuron_axis(phenotype_panel)
+    }
+    cortical_axis = (phenotypes or {}).get("cortical_neurons") or {}
 
     return {
         "groups": groups,
         "variables": variables,
         "gene_index": gene_index,
         "rate_vectors": rate_vectors,
+        "phenotypes": phenotypes,
+        "rerconverge": rerconverge_data or {},
         "tables": {},
         "provenance": {
             "gnomad": {
@@ -336,7 +397,7 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                 "total_genes": len(paml_data or {}),
             } if paml_data else None,
             "rate_vectors": {
-                "source": "homology_pal2nal_ng86",
+                "source": (rate_vectors.get("provenance") or {}).get("source"),
                 "panel_species": len(rate_vectors.get("panel") or []),
                 "genes_with_usable_rates": sum(
                     1 for c in (rate_vectors.get("coverage") or {}).values()
@@ -353,7 +414,28 @@ def build_data(gene_data: dict, expansion: dict, exclude: set | None = None,
                     "excluded_genes": (rate_vectors.get("risk_filter") or {}).get("excluded_genes", []),
                     "null_result_changes_with_aligner": "weight_not_applicable_until_stage_3",
                 },
-            } if rdnds_data else None,
+            } if (rdnds_data or branch_rate_data) else None,
+            "phenotypes": {
+                "cortical_neurons": {
+                    "source": "Herculano-Houzel compiled isotropic-fractionator fixture",
+                    "usable_species": cortical_axis.get("usable_species"),
+                    "min_species": cortical_axis.get("min_species"),
+                    "underpowered": cortical_axis.get("underpowered"),
+                    "primate_coverage": cortical_axis.get("primate_coverage"),
+                    "non_primate_coverage": cortical_axis.get("non_primate_coverage"),
+                    "quality_counts": cortical_axis.get("quality_counts", {}),
+                    "citations": cortical_axis.get("citations", []),
+                    "overclaim_guard": cortical_axis.get("overclaim_guard"),
+                }
+            },
+            "rerconverge": {
+                "status": (rerconverge_data or {}).get("status"),
+                "secondary": True,
+                "trait": (rerconverge_data or {}).get("trait"),
+                "underpowered": (rerconverge_data or {}).get("underpowered"),
+                "primate_confounded": (rerconverge_data or {}).get("primate_confounded"),
+                "overclaim_guard": (rerconverge_data or {}).get("overclaim_guard"),
+            } if rerconverge_data else None,
             "fp_risk": {
                 "weights": dict(FP_RISK_WEIGHTS),
                 "calibration_state": FP_RISK_CALIBRATION_STATE,

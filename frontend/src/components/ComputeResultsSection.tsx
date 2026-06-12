@@ -1,12 +1,16 @@
 import { useState } from 'react'
 import type { ComputeTest, ComputeResult } from '../lib/types'
 
+const RERCONVERGE_EFFECT_GUIDE = 'Secondary RERconverge association: absolute rate-trait correlation minus matched-control mean absolute correlation; association-only, not causal.'
+
 const EFFECT_SIZE_GUIDES: Record<string, string> = {
   omega_foreground: 'ω > 1: positive selection · ω < 1: purifying/neutral · ω = 1: neutral evolution',
   cohens_d: 'Small ≥ 0.2 · Medium ≥ 0.5 · Large ≥ 0.8 (Cohen 1988)',
   cliffs_delta: 'Small ≥ 0.147 · Medium ≥ 0.33 · Large ≥ 0.474 (Romano 2006)',
   spearmans_rho: 'Weak < 0.3 · Moderate 0.3–0.7 · Strong > 0.7',
 }
+
+EFFECT_SIZE_GUIDES.abs_rer_trait_r_minus_control_mean_abs_r = RERCONVERGE_EFFECT_GUIDE
 
 const SECTION_LABEL: React.CSSProperties = {
   fontSize: '10px', fontWeight: 600, letterSpacing: '0.08em',

@@ -1,0 +1,31 @@
+# Mammal cortical-neuron phenotype fixture for the V-Genes Stage-4 RERconverge axis.
+# Values are millions of cortical neurons. Quality labels are surfaced by the loader.
+species	cortical_neurons_millions	log10_cortical_neurons	source	method	quality	clade	note
+homo_sapiens	16000		Herculano-Houzel compiled summaries	isotropic_fractionator	direct	primate	human cerebral cortex, approx. 16B neurons
+pan_troglodytes	6200		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	primate	
+gorilla_gorilla	9000		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	primate	
+pongo_abelii	9000		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	primate	
+macaca_mulatta	1710		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	primate	
+papio_anubis	2880		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	primate	
+callithrix_jacchus	180		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	primate	
+microcebus_murinus	22		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	primate	
+mus_musculus	14		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	rodent	
+rattus_norvegicus	31		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	rodent	
+mesocricetus_auratus	17		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	rodent	
+oryctolagus_cuniculus	71		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	lagomorph	
+canis_lupus_familiaris	530		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	carnivore	
+felis_catus	250		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	carnivore	
+ursus_maritimus			Herculano-Houzel compiled summaries		isotropic_axis_missing	carnivore	no curated value in fixture
+bos_taurus	3000		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	artiodactyl	
+ovis_aries	500		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	artiodactyl	
+capra_hircus	500		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	artiodactyl	
+sus_scrofa	425		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	artiodactyl	
+equus_caballus	1200		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	perissodactyl	
+tursiops_truncatus	5800		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	cetacean	
+balaenoptera_musculus			Herculano-Houzel compiled summaries		isotropic_axis_missing	cetacean	no curated value in fixture
+pteropus_vampyrus	350		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	bat	
+myotis_lucifugus	12		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	bat	
+loxodonta_africana	5600		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	afrotheria	
+procavia_capensis	170		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	afrotheria	
+monodelphis_domestica	11		Herculano-Houzel compiled summaries	isotropic_fractionator	literature_summary	marsupial	
+ornithorhynchus_anatinus			Herculano-Houzel compiled summaries		isotropic_axis_missing	monotreme	no curated value in fixture

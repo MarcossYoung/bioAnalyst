@@ -1,0 +1,50 @@
+{
+  "version": "vgenes3-curated-v1",
+  "description": "Balanced Stage-3 BBB/synaptic ERC fixture with matched control panels.",
+  "sets": {
+    "bbb_curated": {
+      "role": "bbb",
+      "source": "Curated from existing BBB endothelial, astrocyte-support, and pericyte marker panels",
+      "genes": [
+        "CLDN5", "OCLN", "TJP1", "TJP2", "CDH5", "PECAM1",
+        "SLC2A1", "ABCB1", "ABCG2", "MFSD2A", "LSR", "JAM3",
+        "PLVAP", "VWF", "FLT1", "KDR", "TEK", "LRP1",
+        "AQP4", "GFAP", "ALDH1L1", "PDGFRB", "RGS5", "CSPG4"
+      ]
+    },
+    "synaptic_curated": {
+      "role": "synaptic",
+      "source": "Curated from canonical SynGO synaptic genes",
+      "genes": [
+        "SYN1", "SYN2", "SYP", "SNAP25", "STX1A", "STXBP1",
+        "VAMP2", "SYT1", "RIMS1", "RIMS2", "UNC13A", "DLG4",
+        "SHANK1", "SHANK2", "SHANK3", "HOMER1", "GRIN1", "GRIN2A",
+        "GRIA1", "GRIA2", "CAMK2A", "NRXN1", "NLGN1", "NLGN3"
+      ]
+    },
+    "brain_expressed_non_synaptic_non_bbb": {
+      "role": "control",
+      "source": "Qualitative brain-expressed non-synaptic/non-BBB controls",
+      "genes": [
+        "GAPDH", "ACTB", "B2M", "PGK1", "HPRT1", "TBP",
+        "PPIA", "RPL13A", "YWHAZ", "UBC", "HMBS", "GUSB"
+      ]
+    },
+    "endothelial_non_bbb": {
+      "role": "control",
+      "source": "Qualitative endothelial non-BBB controls",
+      "genes": [
+        "ENG", "ESAM", "EMCN", "SELE", "SELP", "ICAM1",
+        "VCAM1", "NOS3", "ROBO4", "CD34", "MCAM", "THBD"
+      ]
+    },
+    "expression_length_gc_matched": {
+      "role": "control",
+      "source": "Qualitative expression-/length-/GC-matched control fixture",
+      "genes": [
+        "EEF1A1", "PUM1", "SDHA", "RPLP0", "RPL19", "RPS18",
+        "CANX", "CALR", "YWHAB", "TUBB", "TUBA1B", "PSMB4"
+      ]
+    }
+  }
+}
