@@ -66,6 +66,7 @@ FORMALIZER_STAGE2_SPEC = AgentSpec(
             OutputField("atomic_claims", "List of minimal testable predictions. Each claim object must include statement, null_hypothesis, and construct: set_difference, cross_lineage_rate_correlation, or phenotype_association."),
             OutputField("key_search_terms", "Search terms for literature retrieval."),
         ),
+        notes=("The top-level JSON value must be an object, not a bare array.",),
     ),
 )
 
@@ -140,11 +141,17 @@ def _normalize_stage1_output(stage1: dict) -> dict:
 
 
 def _normalize_stage2_output(stage2: dict) -> dict:
+    if isinstance(stage2, list):
+        stage2 = {"atomic_claims": stage2, "key_search_terms": []}
     if not isinstance(stage2, dict):
         raise ValueError("Formalizer stage2 must return a JSON object")
 
     out = dict(stage2)
     claims = out.get("atomic_claims")
+    if claims is None:
+        claims = out.get("claims") or out.get("atomicClaims") or out.get("predictions")
+        if claims is not None:
+            out["atomic_claims"] = claims
     if not isinstance(claims, list):
         raise ValueError("Formalizer stage2 must include atomic_claims as a list")
 
@@ -221,6 +228,11 @@ def formalize_stage2(stage1: dict) -> dict:
             "key_entities": ", ".join(stage1.get("key_entities", [])),
             "starter_entities": ", ".join(stage1.get("starter_entities", [])),
         },
+        constraints=(
+            "Return a single top-level JSON object, never a bare array.",
+            'Use exactly this top-level shape: {"atomic_claims": [...], "key_search_terms": [...]}.',
+            "Do not split methods, datasets, citations, or background rationale into claims unless they are part of the core empirical hypothesis.",
+        ),
         expected_outputs=("atomic_claims", "key_search_terms"),
     )
     return _normalize_stage2_output(llm_call_json(

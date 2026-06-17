@@ -76,6 +76,41 @@ def test_formalizer_stage2_accepts_plain_english_alias(monkeypatch):
     assert out["atomic_claims"][0]["construct"] == "cross_lineage_rate_correlation"
 
 
+def test_formalizer_stage2_accepts_bare_claim_array(monkeypatch):
+    payload = [
+        {
+            "statement": "Synaptic and BBB genes co-evolve across mammals",
+            "null_hypothesis": "Synaptic and BBB gene rates are independent across mammals",
+        },
+    ]
+    monkeypatch.setattr(formalizer, "llm_call_json", lambda *args, **kwargs: payload)
+
+    out = formalizer.formalize_stage2({"core_hypothesis": "co-evolution"})
+
+    assert out["atomic_claims"][0]["statement"] == "Synaptic and BBB genes co-evolve across mammals"
+    assert out["atomic_claims"][0]["construct"] == "cross_lineage_rate_correlation"
+    assert out["key_search_terms"] == []
+
+
+def test_formalizer_stage2_accepts_claims_alias(monkeypatch):
+    payload = {
+        "claims": [
+            {
+                "plain_english": "BBB genes show phenotype-linked evolution",
+                "null": "BBB gene evolution is unrelated to phenotype",
+            },
+        ],
+        "key_search_terms": ["BBB evolution phenotype"],
+    }
+    monkeypatch.setattr(formalizer, "llm_call_json", lambda *args, **kwargs: payload)
+
+    out = formalizer.formalize_stage2({"core_hypothesis": "phenotype association"})
+
+    assert out["atomic_claims"][0]["statement"] == "BBB genes show phenotype-linked evolution"
+    assert out["atomic_claims"][0]["construct"] == "phenotype_association"
+    assert out["key_search_terms"] == ["BBB evolution phenotype"]
+
+
 def test_formalizer_stage2_infers_cross_lineage_construct(monkeypatch):
     payload = {
         "atomic_claims": [
