@@ -49,6 +49,67 @@ def test_librarian_honors_configured_per_claim_budget(monkeypatch):
     assert evidence["claim_evidence"]["claim_1"]["retrieved_papers"] == []
 
 
+def test_librarian_degrades_when_query_expansion_fails(monkeypatch):
+    formalized = {
+        "core_hypothesis": "A hypothesis",
+        "domain": "biology",
+        "key_entities": [],
+        "starter_entities": [],
+        "cited_literature": [],
+        "atomic_claims": [
+            {"id": "claim_1", "statement": "GENE1 changes outcome", "null_hypothesis": "GENE1 does not change outcome"},
+        ],
+    }
+
+    monkeypatch.setattr(librarian, "get_relevant_flags", lambda *args, **kwargs: [])
+    monkeypatch.setattr(librarian, "format_flags_for_prompt", lambda flags: "")
+    monkeypatch.setattr(librarian, "expand_queries", lambda *args, **kwargs: (_ for _ in ()).throw(IndexError("list index out of range")))
+    monkeypatch.setattr(
+        librarian,
+        "llm_call_json",
+        lambda *args, **kwargs: {
+            "claim_id": "claim_1",
+            "confounders_identified": [],
+            "evidence_strength": "absent",
+            "novelty_flag": "unstudied",
+            "literature_gap": "unknown",
+            "synthesis": "summary",
+        },
+    )
+
+    evidence = librarian.retrieve_evidence(formalized)
+
+    claim = evidence["claim_evidence"]["claim_1"]
+    assert claim["queries_used"] == []
+    assert claim["librarian_errors"] == ["query expansion failed: list index out of range"]
+
+
+def test_librarian_degrades_when_synthesis_fails(monkeypatch):
+    formalized = {
+        "core_hypothesis": "A hypothesis",
+        "domain": "biology",
+        "key_entities": [],
+        "starter_entities": [],
+        "cited_literature": [],
+        "atomic_claims": [
+            {"id": "claim_1", "statement": "GENE1 changes outcome", "null_hypothesis": "GENE1 does not change outcome"},
+        ],
+    }
+
+    monkeypatch.setattr(librarian, "get_relevant_flags", lambda *args, **kwargs: [])
+    monkeypatch.setattr(librarian, "format_flags_for_prompt", lambda flags: "")
+    monkeypatch.setattr(librarian, "expand_queries", lambda *args, **kwargs: [])
+    monkeypatch.setattr(librarian, "llm_call_json", lambda *args, **kwargs: (_ for _ in ()).throw(IndexError("list index out of range")))
+
+    evidence = librarian.retrieve_evidence(formalized)
+
+    claim = evidence["claim_evidence"]["claim_1"]
+    assert claim["evidence_strength"] == "absent"
+    assert claim["novelty_flag"] == "unstudied"
+    assert claim["literature_gap"] == "Librarian synthesis failed: list index out of range"
+    assert claim["librarian_errors"] == ["synthesis failed: list index out of range"]
+
+
 def test_run_pipeline_overlaps_librarian_with_analyst(monkeypatch):
     lib_started = threading.Event()
     stamps = {}

@@ -132,7 +132,12 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
 
     for idx, raw_claim in enumerate(formalized.get("atomic_claims", []) or []):
         claim = normalize_atomic_claim(raw_claim, idx)
-        expanded = expand_queries(claim, starter_entities)
+        claim_errors = []
+        try:
+            expanded = expand_queries(claim, starter_entities)
+        except Exception as e:
+            expanded = []
+            claim_errors.append(f"query expansion failed: {e}")
         if on_event:
             on_event(ev.queries_expanded(claim["id"], len(expanded)))
 
@@ -216,12 +221,23 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
             contextual_state={"claim_id": claim["id"]},
             expected_outputs=("confounders_identified", "evidence_strength", "novelty_flag", "literature_gap", "synthesis"),
         )
-        synthesis = llm_call_json(
-            "librarian_synthesizer",
-            LIBRARIAN_SYNTHESIS_SPEC.render_system_prompt(),
-            synth_task.render(),
-            max_tokens=2000,
-        )
+        try:
+            synthesis = llm_call_json(
+                "librarian_synthesizer",
+                LIBRARIAN_SYNTHESIS_SPEC.render_system_prompt(),
+                synth_task.render(),
+                max_tokens=2000,
+            )
+        except Exception as e:
+            synthesis = {
+                "claim_id": claim["id"],
+                "confounders_identified": "",
+                "evidence_strength": "absent",
+                "novelty_flag": "unstudied",
+                "literature_gap": f"Librarian synthesis failed: {e}",
+                "synthesis": "",
+            }
+            claim_errors.append(f"synthesis failed: {e}")
         if not isinstance(synthesis, dict):
             synthesis = {
                 "claim_id": claim["id"],
@@ -252,6 +268,7 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
             "classifier_degraded": classification_summary["classifier_degraded"],
             "retrieved_papers": all_papers,
             "queries_used": expanded,
+            "librarian_errors": claim_errors,
         }
 
     classifier_degraded = any(

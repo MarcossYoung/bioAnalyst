@@ -126,6 +126,21 @@ def _loads_json_response(text: str):
         raise original_error
 
 
+def _anthropic_text(resp) -> str:
+    content = getattr(resp, "content", None) or []
+    if not content:
+        return ""
+    return str(getattr(content[0], "text", "") or "")
+
+
+def _openai_text(resp) -> str:
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    return str(getattr(message, "content", "") or "")
+
+
 def _retry_after_seconds(exc) -> float | None:
     """Read retry-after / retry-after-ms from an API error response, if any."""
     resp = getattr(exc, "response", None)
@@ -173,7 +188,7 @@ def _call_claude_json(system: str, user: str, max_tokens: int) -> dict:
                     messages=[{"role": "user", "content": user}]
                 )
                 TRACKER.add_claude(resp.usage)
-                text = resp.content[0].text
+                text = _anthropic_text(resp)
                 try:
                     return _loads_json_response(text)
                 except json.JSONDecodeError:
@@ -216,7 +231,7 @@ def _call_local_json(system: str, user: str, max_tokens: int) -> dict:
                 )
                 if hasattr(resp, "usage") and resp.usage:
                     TRACKER.add_local(resp.usage.prompt_tokens, resp.usage.completion_tokens)
-                text = resp.choices[0].message.content
+                text = _openai_text(resp)
                 try:
                     return _loads_json_response(text)
                 except json.JSONDecodeError:
