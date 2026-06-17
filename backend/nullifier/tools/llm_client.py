@@ -110,6 +110,22 @@ def _strip_json_fences(text: str) -> str:
     return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
 
 
+def _loads_json_response(text: str):
+    """Parse a JSON response, tolerating harmless prose around one JSON value."""
+    cleaned = _strip_json_fences(text)
+    decoder = json.JSONDecoder()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as original_error:
+        for start in (i for i, ch in enumerate(cleaned) if ch in "{["):
+            try:
+                value, _ = decoder.raw_decode(cleaned[start:])
+                return value
+            except json.JSONDecodeError:
+                continue
+        raise original_error
+
+
 def _retry_after_seconds(exc) -> float | None:
     """Read retry-after / retry-after-ms from an API error response, if any."""
     resp = getattr(exc, "response", None)
@@ -159,7 +175,7 @@ def _call_claude_json(system: str, user: str, max_tokens: int) -> dict:
                 TRACKER.add_claude(resp.usage)
                 text = resp.content[0].text
                 try:
-                    return json.loads(_strip_json_fences(text))
+                    return _loads_json_response(text)
                 except json.JSONDecodeError:
                     if attempt == 0:
                         user = user + "\n\nIMPORTANT: Respond with ONLY valid JSON. No preamble, no markdown fences."
@@ -202,7 +218,7 @@ def _call_local_json(system: str, user: str, max_tokens: int) -> dict:
                     TRACKER.add_local(resp.usage.prompt_tokens, resp.usage.completion_tokens)
                 text = resp.choices[0].message.content
                 try:
-                    return json.loads(_strip_json_fences(text))
+                    return _loads_json_response(text)
                 except json.JSONDecodeError:
                     if attempt == 0:
                         user = user + "\n\nIMPORTANT: Respond with ONLY valid JSON. No preamble, no markdown fences."

@@ -3,7 +3,7 @@
 
 [backends.claude]
 provider = "anthropic"
-model = "claude-sonnet-4-20250514"
+model = "claude-sonnet-4-6"
 # api_key read from ANTHROPIC_API_KEY env var
 
 [backends.local]
@@ -93,6 +93,11 @@ max_flags_to_inject = 5
 cache_ttl_days = 7
 # Drop canonical sets whose Gemma relevance score is below this (0..3).
 min_score = 2
+# Broad ontology subprocesses are exploratory by default. Only central, capped
+# subprocesses enter primary analysis to keep tests focused and runtime bounded.
+process_min_score = 3
+max_primary_process_sets = 10
+max_primary_set_size = 250
 
 # v6: leave-one-out robustness thresholds (tools/compute.leave_one_out)
 [robustness]

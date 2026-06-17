@@ -126,6 +126,8 @@ def _enrich_one(prov: dict, output_blob: Any, context_blob: Any) -> dict:
         out = llm_call_json("provenance_enrichment", PROVENANCE_ENRICHER_SYSTEM, user, max_tokens=400)
     except Exception:
         return prov  # leave as-is on failure — never block the pipeline
+    if not isinstance(out, dict):
+        return prov
     enriched = dict(prov)
     if isinstance(out.get("triggered_by"), list) and out["triggered_by"]:
         enriched["triggered_by"] = [str(x) for x in out["triggered_by"]][:8]

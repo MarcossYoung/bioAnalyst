@@ -222,6 +222,15 @@ def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event
             synth_task.render(),
             max_tokens=2000,
         )
+        if not isinstance(synthesis, dict):
+            synthesis = {
+                "claim_id": claim["id"],
+                "confounders_identified": "",
+                "evidence_strength": "absent",
+                "novelty_flag": "unstudied",
+                "literature_gap": "Librarian synthesis returned a non-object JSON value.",
+                "synthesis": "",
+            }
 
         if on_event:
             on_event(

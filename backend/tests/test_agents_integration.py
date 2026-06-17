@@ -3,8 +3,10 @@
 from nullifier.agents import analyst, formalizer, interpreter, librarian, methodologist, skeptic
 from nullifier.agents.analyst import _filter_expansion_to_targets, _screen_comparable, _set_statistics, _set_usability
 from nullifier.agents.semantic import normalize_atomic_claim
+from nullifier.tools import gene_sets
 from nullifier.tools.genomic_data import build_data
 from nullifier.tools.literature import citation_similarity
+from nullifier.tools.llm_client import _loads_json_response
 from nullifier.tools.query_expander import expand_queries
 
 
@@ -53,6 +55,27 @@ def test_formalizer_stage2_normalizes_claims(monkeypatch):
     assert out["key_search_terms"] == ["X Y"]
 
 
+def test_formalizer_stage2_accepts_plain_english_alias(monkeypatch):
+    payload = {
+        "atomic_claims": [
+            {
+                "claim_id": "AC1",
+                "plain_english": "Synaptic and BBB genes have correlated rates across mammals",
+                "null_hypothesis": "Rates are independent across mammals",
+                "construct": "cross_lineage_rate_correlation",
+            },
+        ],
+        "key_search_terms": ["synapse BBB coevolution"],
+    }
+    monkeypatch.setattr(formalizer, "llm_call_json", lambda *args, **kwargs: payload)
+
+    out = formalizer.formalize_stage2({"core_hypothesis": "co-evolution"})
+
+    assert out["atomic_claims"][0]["id"] == "AC1"
+    assert out["atomic_claims"][0]["statement"] == "Synaptic and BBB genes have correlated rates across mammals"
+    assert out["atomic_claims"][0]["construct"] == "cross_lineage_rate_correlation"
+
+
 def test_formalizer_stage2_infers_cross_lineage_construct(monkeypatch):
     payload = {
         "atomic_claims": [
@@ -68,6 +91,11 @@ def test_formalizer_stage2_infers_cross_lineage_construct(monkeypatch):
     out = formalizer.formalize_stage2({"core_hypothesis": "co-evolution"})
 
     assert out["atomic_claims"][0]["construct"] == "cross_lineage_rate_correlation"
+
+
+def test_llm_json_parser_accepts_wrapped_json():
+    assert _loads_json_response('Here is the JSON:\n{"ok": true}\nDone.') == {"ok": True}
+    assert _loads_json_response('```json\n{"ok": true}\n```') == {"ok": True}
 
 
 def test_librarian_preserves_paper_alignment_when_batch_is_short(monkeypatch):
@@ -492,6 +520,55 @@ def test_set_statistics_flags_dnds_saturation():
     assert stats["dnds_saturation_flag"] is True
     assert stats["dnds_saturation_fraction"] == 2 / 3
     assert stats["dnds_degraded"] is True
+
+
+def test_set_statistics_reports_missing_split_gene_without_crashing():
+    gene_data = {
+        "SYNGAP1": {"orthologs": [{"dnds": 0.2}], "paralogs": [], "gene_tree": {}},
+    }
+
+    stats = _set_statistics(["SYP", "SYNGAP1"], gene_data)
+
+    assert stats["valid_gene_count"] == 1
+    assert stats["missing_genes"] == ["SYP"]
+    assert stats["dnds_n"] == 1
+
+
+def test_gene_set_expansion_keeps_only_primary_sets_for_compute(monkeypatch):
+    candidates = {
+        "synaptic.all": {"genes": ["SYP", "SYNGAP1"], "source": "test", "label": "synaptic.all"},
+        "synaptic.process.a": {"genes": ["SYP", "A1"], "source": "test", "label": "synaptic.process.a"},
+        "synaptic.process.b": {"genes": ["SYP", "B1"], "source": "test", "label": "synaptic.process.b"},
+        "synaptic.process.c": {"genes": ["SYP", "C1"], "source": "test", "label": "synaptic.process.c"},
+        "bbb.endothelial": {"genes": ["CLDN5"], "source": "test", "label": "bbb.endothelial"},
+        "control.housekeeping": {"genes": ["GAPDH"], "source": "test", "label": "control.housekeeping"},
+    }
+    scores = {
+        "synaptic.all": 2,
+        "synaptic.process.a": 3,
+        "synaptic.process.b": 3,
+        "synaptic.process.c": 2,
+        "bbb.endothelial": 2,
+        "control.housekeeping": 2,
+    }
+
+    monkeypatch.setattr(gene_sets, "load_syngo", lambda *args, **kwargs: {})
+    monkeypatch.setattr(gene_sets, "_all_canonical_sets", lambda syngo: candidates)
+    monkeypatch.setattr(gene_sets, "_gemma_relevance", lambda hypothesis, candidate: (scores[candidate["label"]], "test"))
+    monkeypatch.setattr(gene_sets, "random_background_genes", lambda: [])
+    monkeypatch.setattr(
+        gene_sets,
+        "load_config",
+        lambda: {"gene_sets": {"cache_ttl_days": 7, "process_min_score": 3, "max_primary_process_sets": 1}},
+    )
+
+    expansion = gene_sets.expand(["SYP"], "synapse BBB hypothesis", "biology")
+
+    assert set(expansion["expanded"]) == {"synaptic.all", "synaptic.process.a", "bbb.endothelial"}
+    assert set(expansion["exploratory"]) == {"synaptic.process.b", "synaptic.process.c"}
+    assert expansion["total_expanded"] == 3
+    assert expansion["total_expanded_memberships"] == 3
+    assert gene_sets.all_genes(expansion) == ["SYP", "SYNGAP1", "A1", "CLDN5", "GAPDH"]
 
 
 def test_set_usability_flags_sets_independently():

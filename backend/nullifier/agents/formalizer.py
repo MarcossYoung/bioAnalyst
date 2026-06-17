@@ -1,7 +1,7 @@
 import sys
 
 from ..tools.llm_client import llm_call_json
-from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
+from .semantic import AgentSpec, OutputContract, OutputField, TaskObject, normalize_atomic_claim
 
 
 FORMALIZER_STAGE1_SPEC = AgentSpec(
@@ -63,7 +63,7 @@ FORMALIZER_STAGE2_SPEC = AgentSpec(
     output_contract=OutputContract(
         summary="Structured atomic-claim decomposition.",
         fields=(
-            OutputField("atomic_claims", "List of minimal testable predictions. Each claim must include construct: set_difference, cross_lineage_rate_correlation, or phenotype_association."),
+            OutputField("atomic_claims", "List of minimal testable predictions. Each claim object must include statement, null_hypothesis, and construct: set_difference, cross_lineage_rate_correlation, or phenotype_association."),
             OutputField("key_search_terms", "Search terms for literature retrieval."),
         ),
     ),
@@ -152,14 +152,13 @@ def _normalize_stage2_output(stage2: dict) -> dict:
     for idx, claim in enumerate(claims):
         if not isinstance(claim, dict):
             raise ValueError("Formalizer stage2 atomic_claims items must be JSON objects")
-        statement = claim.get("statement")
-        null_hypothesis = claim.get("null_hypothesis")
+        normalized_claim = normalize_atomic_claim(claim, idx)
+        statement = normalized_claim.get("statement")
+        null_hypothesis = normalized_claim.get("null_hypothesis")
         if not isinstance(statement, str) or not statement.strip():
             raise ValueError(f"Formalizer stage2 atomic claim {idx + 1} is missing statement")
         if not isinstance(null_hypothesis, str) or not null_hypothesis.strip():
             raise ValueError(f"Formalizer stage2 atomic claim {idx + 1} is missing null_hypothesis")
-        normalized_claim = dict(claim)
-        normalized_claim["id"] = str(claim.get("id") or f"claim_{idx + 1}")
         normalized_claim["statement"] = statement.strip()
         normalized_claim["null_hypothesis"] = null_hypothesis.strip()
         construct = str(claim.get("construct") or "").strip()
@@ -208,7 +207,7 @@ def formalize_stage1(raw_text: str) -> dict:
         "formalizer_stage1",
         FORMALIZER_STAGE1_SPEC.render_system_prompt(),
         task.render(),
-        max_tokens=2000,
+        max_tokens=6000,
     ))
 
 
@@ -228,7 +227,7 @@ def formalize_stage2(stage1: dict) -> dict:
         "formalizer_stage2",
         FORMALIZER_STAGE2_SPEC.render_system_prompt(),
         task.render(),
-        max_tokens=2000,
+        max_tokens=4000,
     ))
 
 

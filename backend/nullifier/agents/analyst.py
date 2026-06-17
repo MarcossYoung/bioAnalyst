@@ -543,6 +543,8 @@ def _split_into_sets(formalized: dict, starter: list[str]) -> tuple[list[str], l
         + "\n\nYou receive a hypothesis and a list of gene symbols. If you cannot confidently split the genes into two sets, put all genes in set_a and leave set_b empty.",
         max_tokens=1000,
     )
+    if not isinstance(result, dict):
+        return starter, []
     return result.get("set_a", starter), result.get("set_b", [])
 
 
@@ -697,7 +699,7 @@ def _set_statistics(
     diagnostics: dict | None = None,
     min_low_risk_genes: int = 2,
 ) -> dict:
-    valid = [g for g in genes if "_error" not in gene_data.get(g, {})]
+    valid = [g for g in genes if g in gene_data and "_error" not in gene_data.get(g, {})]
     if not valid:
         return {"valid_gene_count": 0}
 

@@ -50,6 +50,9 @@ def normalize_atomic_claim(claim: Any, index: int | None = None) -> dict[str, An
     if isinstance(claim, dict):
         statement = (
             claim.get("statement")
+            or claim.get("plain_english")
+            or claim.get("plainEnglish")
+            or claim.get("prediction")
             or claim.get("claim")
             or claim.get("text")
             or claim.get("value")
@@ -71,7 +74,7 @@ def normalize_atomic_claim(claim: Any, index: int | None = None) -> dict[str, An
             construct = "set_difference"
         return {
             **claim,
-            "id": str(claim.get("id") or claim_id),
+            "id": str(claim.get("id") or claim.get("claim_id") or claim_id),
             "statement": str(statement).strip(),
             "null_hypothesis": str(null_hypothesis).strip(),
             "entities": [str(e).strip() for e in entities if str(e).strip()],

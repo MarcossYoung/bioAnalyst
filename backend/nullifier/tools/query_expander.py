@@ -47,6 +47,8 @@ Mechanism: {claim.get('mechanism', '')}
 Starter entities to anchor queries: {', '.join(starter_entities[:20])}
 """
     result = llm_call_json("query_expander", QUERY_EXPANDER_SYSTEM, user, max_tokens=1000)
+    if not isinstance(result, dict):
+        return []
     return result.get("queries", [])
 
 

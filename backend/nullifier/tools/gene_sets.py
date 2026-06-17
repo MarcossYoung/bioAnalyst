@@ -271,6 +271,28 @@ def _gemma_relevance(hypothesis: str, candidate: dict) -> tuple[int, str]:
         return 0, f"fallback (llm error: {type(e).__name__})"
 
 
+def _is_synaptic_process_set(name: str) -> bool:
+    return name.startswith("synaptic.process.")
+
+
+def _is_primary_eligible_set(name: str, size: int, max_size: int) -> bool:
+    if name.startswith("bbb.") or name.startswith("vgenes3."):
+        return True
+    return (
+        name in {"synaptic.all", "synaptic.presynaptic", "synaptic.postsynaptic"}
+        and size <= max_size
+    )
+
+
+def _unique_gene_count(pools: Iterable[Iterable[str]]) -> int:
+    seen: set[str] = set()
+    for pool in pools:
+        for gene in pool or []:
+            if isinstance(gene, str) and gene.strip():
+                seen.add(gene.upper())
+    return len(seen)
+
+
 # ── expand() — public entry point ───────────────────────────────────────────
 def expand(starter_entities: Iterable[str], hypothesis: str, domain: str,
            syngo_dir: Path | None = None, min_score: int = 2,
@@ -280,6 +302,10 @@ def expand(starter_entities: Iterable[str], hypothesis: str, domain: str,
 
     cfg = load_config()
     ttl = int(cfg.get("gene_sets", {}).get("cache_ttl_days", 7))
+    gs_cfg = cfg.get("gene_sets", {})
+    process_min_score = int(gs_cfg.get("process_min_score", 3))
+    max_primary_process_sets = int(gs_cfg.get("max_primary_process_sets", 10))
+    max_primary_set_size = int(gs_cfg.get("max_primary_set_size", 250))
     syngo = load_syngo(syngo_dir, cache_ttl_days=ttl)
     candidates = _all_canonical_sets(syngo)
 
@@ -292,27 +318,45 @@ def expand(starter_entities: Iterable[str], hypothesis: str, domain: str,
             on_event(name, score)
 
     expanded: dict[str, list[str]] = {}
+    exploratory: dict[str, list[str]] = {}
     controls: dict[str, list[str]] = {}
     starter_set = {s.upper() for s in starter}
-    for s in scored:
-        if s["score"] < min_score:
-            continue
+    kept = [s for s in scored if s["score"] >= min_score]
+    process_primary = {
+        s["set"]
+        for s in sorted(
+            [
+                s for s in kept
+                if _is_synaptic_process_set(s["set"])
+                and s["score"] >= process_min_score
+                and s["size"] <= max_primary_set_size
+            ],
+            key=lambda item: (-item["score"], item["set"]),
+        )[:max_primary_process_sets]
+    }
+    for s in kept:
         name = s["set"]
         genes = candidates[name]["genes"]
         # Union with starter (no de-dup of starter — they appear in `starter` field).
         unique = [g for g in genes if g.upper() not in starter_set]
         if name.startswith("control."):
             controls[name] = unique
-        else:
+        elif _is_primary_eligible_set(name, s["size"], max_primary_set_size) or name in process_primary:
             expanded[name] = unique
+        else:
+            exploratory[name] = unique
 
     # Always attach a default control set if none survived scoring
     if not controls:
         for name, genes in CONTROL_SETS.items():
             controls[f"control.{name}"] = list(genes)
 
-    total_expanded = sum(len(v) for v in expanded.values())
-    total_controls = sum(len(v) for v in controls.values())
+    expanded_memberships = sum(len(v) for v in expanded.values())
+    exploratory_memberships = sum(len(v) for v in exploratory.values())
+    control_memberships = sum(len(v) for v in controls.values())
+    total_expanded = _unique_gene_count(expanded.values())
+    total_exploratory = _unique_gene_count(exploratory.values())
+    total_controls = _unique_gene_count(controls.values())
     background = {"background.random_300": random_background_genes()}
 
     prov = make_provenance(
@@ -321,9 +365,15 @@ def expand(starter_entities: Iterable[str], hypothesis: str, domain: str,
         evidence_refs=[f"SynGO {SYNGO_RELEASE}", BBB_VERSION] + [s["set"] for s in scored if s["score"] >= min_score],
         method=(f"Score all canonical sets (SynGO {SYNGO_RELEASE} + BBB + controls) for "
                 f"relevance to the hypothesis via the gene_set_classifier routing; keep "
-                f"score >= {min_score}; union with the starter list; attach matched controls."),
+                f"score >= {min_score}; primary analysis uses top-level/curated sets plus "
+                f"at most {max_primary_process_sets} synaptic subprocess sets with score >= "
+                f"{process_min_score}, excluding sets larger than {max_primary_set_size} genes "
+                f"unless curated; remaining relevant sets are exploratory."),
         inputs={"starter": starter, "hypothesis": hypothesis, "min_score": min_score,
-                "candidate_count": len(candidates)},
+                "candidate_count": len(candidates),
+                "process_min_score": process_min_score,
+                "max_primary_process_sets": max_primary_process_sets,
+                "max_primary_set_size": max_primary_set_size},
     )
 
     return {
@@ -331,16 +381,24 @@ def expand(starter_entities: Iterable[str], hypothesis: str, domain: str,
         "starter": starter,
         "starter_count": len(starter),
         "expanded": expanded,
+        "exploratory": exploratory,
         "controls": controls,
         "background": background,
         "candidate_scores": scored,
         "min_score": min_score,
+        "process_min_score": process_min_score,
+        "max_primary_process_sets": max_primary_process_sets,
+        "max_primary_set_size": max_primary_set_size,
         "source": f"SynGO {SYNGO_RELEASE} + {BBB_VERSION} + hardcoded controls",
         "syngo_release": SYNGO_RELEASE,
         "bbb_version": BBB_VERSION,
         "matching_params": CONTROL_MATCHING,
         "total_expanded": total_expanded,
+        "total_expanded_memberships": expanded_memberships,
+        "total_exploratory": total_exploratory,
+        "total_exploratory_memberships": exploratory_memberships,
         "total_controls": total_controls,
+        "total_control_memberships": control_memberships,
         "provenance": prov,
     }
 

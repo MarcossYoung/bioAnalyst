@@ -302,19 +302,41 @@ def _normalize_expansion(expansion: dict | None) -> dict | None:
     if not expansion:
         return expansion
     expanded = expansion.get("expanded") or {}
+    exploratory = expansion.get("exploratory") or {}
     controls = expansion.get("controls") or {}
     expanded_keys = list(expanded.keys()) if isinstance(expanded, dict) else []
+    exploratory_keys = list(exploratory.keys()) if isinstance(exploratory, dict) else []
     control_keys = list(controls.keys()) if isinstance(controls, dict) else []
     return {
         **expansion,
         "expanded_sets": expansion.get("expanded_sets") or expanded_keys,
+        "exploratory_sets": expansion.get("exploratory_sets") or exploratory_keys,
         "control_sets": expansion.get("control_sets") or control_keys,
         "total_expanded": expansion.get(
             "total_expanded",
+            len({str(g).upper() for genes in expanded.values() for g in (genes or [])})
+            if isinstance(expanded, dict) else 0,
+        ),
+        "total_expanded_memberships": expansion.get(
+            "total_expanded_memberships",
             sum(len(v) for v in expanded.values()) if isinstance(expanded, dict) else 0,
+        ),
+        "total_exploratory": expansion.get(
+            "total_exploratory",
+            len({str(g).upper() for genes in exploratory.values() for g in (genes or [])})
+            if isinstance(exploratory, dict) else 0,
+        ),
+        "total_exploratory_memberships": expansion.get(
+            "total_exploratory_memberships",
+            sum(len(v) for v in exploratory.values()) if isinstance(exploratory, dict) else 0,
         ),
         "total_controls": expansion.get(
             "total_controls",
+            len({str(g).upper() for genes in controls.values() for g in (genes or [])})
+            if isinstance(controls, dict) else 0,
+        ),
+        "total_control_memberships": expansion.get(
+            "total_control_memberships",
             sum(len(v) for v in controls.values()) if isinstance(controls, dict) else 0,
         ),
     }
@@ -347,10 +369,16 @@ def gene_sets_expanded(expansion: dict) -> Event:
         "bbb_version": expansion.get("bbb_version"),
         "starter_count": expansion.get("starter_count", 0),
         "expanded_set_count": len(expansion.get("expanded") or {}),
+        "exploratory_set_count": len(expansion.get("exploratory") or {}),
         "control_set_count": len(expansion.get("controls") or {}),
         "total_expanded": expansion.get("total_expanded", 0),
+        "total_expanded_memberships": expansion.get("total_expanded_memberships", 0),
+        "total_exploratory": expansion.get("total_exploratory", 0),
+        "total_exploratory_memberships": expansion.get("total_exploratory_memberships", 0),
         "total_controls": expansion.get("total_controls", 0),
+        "total_control_memberships": expansion.get("total_control_memberships", 0),
         "expanded_sets": list((expansion.get("expanded") or {}).keys()),
+        "exploratory_sets": list((expansion.get("exploratory") or {}).keys()),
         "control_sets": list((expansion.get("controls") or {}).keys()),
     })
 
