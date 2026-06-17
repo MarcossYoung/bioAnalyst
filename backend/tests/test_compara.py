@@ -344,3 +344,61 @@ def test_fetch_comparas_unwraps_current_api_response(tmp_path, monkeypatch):
     body = {"comparas": [{"name": "vertebrates", "release": 115}]}
     with patch("nullifier.tools.ensembl.requests.get", return_value=_mock_resp(body)):
         assert e.fetch_comparas() == body["comparas"]
+
+
+# ── comparability screen (condensed homology) ────────────────────────────────
+
+# Real Ensembl condensed homology entries carry `species` at the TOP LEVEL with
+# no nested `target` object — this is what broke the screen (it read
+# target.species via the full-format parser, getting None for every gene).
+_REAL_CONDENSED_BODY = {
+    "data": [{
+        "homologies": [
+            {"species": "mus_musculus", "type": "ortholog_one2one",
+             "protein_id": "ENSMUSP1", "id": "ENSMUSG1",
+             "method_link_type": "ENSEMBL_ORTHOLOGUES"},
+            {"species": "pan_troglodytes", "type": "ortholog_one2one",
+             "protein_id": "ENSPTRP1", "id": "ENSPTRG1",
+             "method_link_type": "ENSEMBL_ORTHOLOGUES"},
+            {"species": "rattus_norvegicus", "type": "ortholog_one2one",
+             "protein_id": "ENSRNOP1", "id": "ENSRNOG1",
+             "method_link_type": "ENSEMBL_ORTHOLOGUES"},
+        ]
+    }]
+}
+
+
+def test_screen_panel_coverage_reads_condensed_top_level_species(tmp_path, monkeypatch):
+    """Regression: the comparability screen must extract species from the
+    top-level `species` field of condensed homology entries. The pre-fix code
+    looked for target.species (full-format only) and scored every gene 0,
+    silently dropping all non-starter genes."""
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    panel = ["mus_musculus", "pan_troglodytes", "rattus_norvegicus", "bos_taurus"]
+    with patch("nullifier.tools.ensembl.requests.get",
+               return_value=_mock_resp(_REAL_CONDENSED_BODY)) as mock_get:
+        cov = e.screen_panel_coverage_by_id_batch(["ENSG00000132535"], panel)
+
+    entry = cov["ENSG00000132535"]
+    assert entry["species_count"] == 3          # was 0 before the fix
+    assert entry["panel_species"] == {"mus_musculus", "pan_troglodytes", "rattus_norvegicus"}
+    # Must use the per-gene GET endpoint (Ensembl has no POST batch homology).
+    assert mock_get.call_args.args[0] == \
+        "https://rest.ensembl.org/homology/id/human/ENSG00000132535"
+
+
+def test_panel_species_for_id_empty_on_no_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "_cfg", {
+        "base_url": "https://rest.ensembl.org",
+        "rate_limit_per_second": 1000,
+        "cache_path": str(tmp_path / "test_cache.db"),
+        "cache_ttl_days": 30,
+    })
+    with patch("nullifier.tools.ensembl.requests.get",
+               return_value=_mock_resp({"data": []})):
+        assert e._panel_species_for_id("ENSG00000000003") == set()

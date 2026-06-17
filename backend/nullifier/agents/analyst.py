@@ -1,3 +1,4 @@
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from statistics import mean, median, stdev
 
@@ -310,6 +311,28 @@ def _screen_comparable(
             ),
         })
 
+    # Fail-open guard: a screen that drops *every* non-starter gene is almost
+    # always a coverage-lookup failure (e.g. a wrong homology field), not real
+    # biology — real human genes have orthologs across many mammals. Collapsing
+    # silently to the starter set empties every expanded set downstream (which
+    # made a whole run untestable), so keep all targets and surface a warning.
+    non_starter_total = sum(1 for g in genes if not g["starter"])
+    non_starter_kept = sum(1 for g in genes if g["kept"] and not g["starter"])
+    fail_open = non_starter_total > 0 and non_starter_kept == 0
+    warning = None
+    if fail_open:
+        warning = (
+            f"comparability screen dropped all {non_starter_total} non-starter genes "
+            "(0 survived the panel-coverage check); treating this as a coverage-lookup "
+            "failure and keeping all targets rather than collapsing to starters"
+        )
+        print(f"[analyst] {warning}", file=sys.stderr)
+        kept = list(targets)
+        for g in genes:
+            g["kept"] = True
+            if not g["starter"]:
+                g["reason"] = "kept_fail_open"
+
     report = {
         "enabled": True,
         "total": len(targets),
@@ -317,6 +340,8 @@ def _screen_comparable(
         "dropped": len(targets) - len(kept),
         "threshold": min_panel_species,
         "panel_size": len(panel or []),
+        "fail_open": fail_open,
+        "warning": warning,
         "genes": genes,
         "provenance": make_provenance(
             source="analyst.comparability_screen",

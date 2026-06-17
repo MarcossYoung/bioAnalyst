@@ -4,6 +4,7 @@ import json
 import sys
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -308,7 +309,19 @@ def fetch_orthologs_by_id_batch(
         for entry in entries:
             source_id = entry.get("id")
             homologies = entry.get("homologies", [])
-            parsed = [_parse_ortholog(h) for h in homologies]
+            if fmt == "condensed":
+                # Condensed homologies have no nested `target`; species/id/etc.
+                # are top-level. _parse_ortholog only understands the full format
+                # (target.species) and would yield target_species=None here.
+                parsed = [{
+                    "target_species": h.get("species"),
+                    "target_id": h.get("id"),
+                    "target_protein_id": h.get("protein_id"),
+                    "ortholog_type": h.get("type"),
+                    "method_link_type": h.get("method_link_type"),
+                } for h in homologies]
+            else:
+                parsed = [_parse_ortholog(h) for h in homologies]
             if source_id:
                 out[source_id] = parsed
         fetched += len(chunk)
@@ -359,7 +372,10 @@ def screen_panel_coverage_by_id_batch(
 ) -> dict[str, dict]:
     """Cheap batch screen for whether genes have orthologs in panel species.
 
-    Uses the condensed homology format, so this avoids alignment payloads. The
+    Ensembl has no batch (POST) homology endpoint — POST /homology/id returns
+    404 — so this fans out per-gene condensed GET /homology/id/human/{id} calls
+    across a thread pool. Each call goes through _request, which is rate-limited
+    (shared lock) and cached. Condensed format avoids alignment payloads. The
     result is intentionally coarse: downstream code still applies the precise
     one-to-one ortholog filter before rate-vector analyses.
     """
@@ -371,29 +387,43 @@ def screen_panel_coverage_by_id_batch(
         ensg: {"species_count": 0, "panel_species": set()}
         for ensg in ids
     }
-    try:
-        homologies_by_id = fetch_orthologs_by_id_batch(
-            ids,
-            use_cache=use_cache,
-            batch_size=batch_size,
-            fmt="condensed",
-        )
-    except Exception as e:
-        print(f"[ensembl] panel coverage screen failed: {e}", file=sys.stderr)
-        return out
-
-    for ensg, homologies in homologies_by_id.items():
-        species = {
-            str(h.get("target_species") or "").lower()
-            for h in (homologies or [])
-            if h.get("target_species")
+    workers = max(1, min(8, len(ids)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_panel_species_for_id, ensg, use_cache): ensg
+            for ensg in ids
         }
-        panel_species = species & panel_set
-        out[ensg] = {
-            "species_count": len(panel_species),
-            "panel_species": panel_species,
-        }
+        for fut in as_completed(futures):
+            ensg = futures[fut]
+            try:
+                species = fut.result()
+            except Exception as e:
+                print(f"[ensembl] panel coverage for {ensg} failed: {e}", file=sys.stderr)
+                continue
+            panel_species = species & panel_set
+            out[ensg] = {
+                "species_count": len(panel_species),
+                "panel_species": panel_species,
+            }
     return out
+
+
+def _panel_species_for_id(ensg_id: str, use_cache: bool = True) -> set[str]:
+    """Set of ortholog species (lower-cased) for one human Ensembl gene id,
+    from the condensed homology endpoint. Returns an empty set on failure."""
+    data = _request(
+        f"/homology/id/human/{ensg_id}",
+        {"type": "orthologues", "format": "condensed"},
+        use_cache,
+    )
+    if not data or not data.get("data"):
+        return set()
+    homologies = data["data"][0].get("homologies", [])
+    return {
+        str(h.get("species") or "").lower()
+        for h in homologies
+        if h.get("species")
+    }
 
 
 def get_orthologs(symbol: str, target_taxon: int = 40674,  # Mammalia
