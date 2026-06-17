@@ -39,11 +39,11 @@ python -m nullifier.cli run --input examples/synapse_bbb.txt --max-papers 3
 
 Six stages run in sequence:
 
-1. **Formalizer** — Extracts the falsifiable core from scaffolding (methods, cited literature, starter data). Decomposes it into atomic claims with null hypotheses. Detects whether the input includes completed analyses (reported statistics, sample sizes) and flags them for reproducibility checking. Presents the result for confirmation before the expensive retrieval step runs.
+1. **Formalizer** — Extracts the falsifiable core from scaffolding (methods, cited literature, starter data). Decomposes it into atomic claims with null hypotheses and normalizes common structured-output variants from the model. Detects whether the input includes completed analyses (reported statistics, sample sizes) and flags them for reproducibility checking. Presents the result for confirmation before the expensive retrieval step runs.
 
-2. **Librarian** — For each atomic claim, generates 5–8 query variants, searches four literature sources in parallel, deduplicates, and classifies each paper as `supports / contradicts / tangential / confounder`. Every classification requires a verbatim abstract quote.
+2. **Librarian** — For each atomic claim, generates 5–8 query variants, searches four literature sources in parallel, deduplicates, and classifies each paper as `supports / contradicts / tangential / confounder`. Every classification requires a verbatim abstract quote. Claim-level query or synthesis failures degrade to `absent / unstudied` evidence for that claim instead of ending the whole run.
 
-3. **Analyst** _(when starter entities are provided)_ — Expands the hypothesis gene list against canonical SynGO and BBB gene sets (scored for relevance by a local Gemma classifier, with a heuristic fallback for set relevance). Fetches Ensembl genomic data for each gene (orthologs, dN/dS, regulatory features, motif overlap).
+3. **Analyst** _(when starter entities are provided)_ — Expands the hypothesis gene list against canonical SynGO and BBB gene sets (scored for relevance by a local Gemma classifier, with a heuristic fallback for set relevance). Expansion is split into primary sets used for compute and exploratory sets retained for context, so broad ontology hits do not automatically turn into thousands of expensive gene tests. Fetches Ensembl genomic data for the primary target genes (orthologs, dN/dS, regulatory features, motif overlap).
 
 4. **Methodologist** — Reads the expanded gene-set data and selects an appropriate statistical test plan: which tests to run, which correction method to apply, which genes form each group.
 
@@ -133,7 +133,7 @@ You can put these values in `.env`; the backend loads it automatically.
 
 ### Local LLM
 
-Install [LM Studio](https://lmstudio.ai) and load a Gemma model (the default config uses `google/gemma-4-e4b`). The default routing uses the local model for high-volume per-paper classification, gene-set scoring, and robustness reading. If LM Studio is unavailable, tasks still routed to `local` can fail; gene-set scoring has a heuristic fallback, but per-paper classification does not automatically reroute to Claude.
+Install [LM Studio](https://lmstudio.ai) and load a Gemma model (the default config uses `google/gemma-4-e4b`). The default routing uses the local model for high-volume per-paper classification, gene-set scoring, and robustness reading. If LM Studio is unavailable, tasks still routed to `local` can fail; gene-set scoring has a heuristic fallback, and Librarian subcall failures are recorded as degraded claim-level evidence rather than crashing the full run.
 
 Check the loaded model ID via LM Studio's `/api/health` endpoint and set `backends.local.model` in your config to match exactly.
 
@@ -162,10 +162,18 @@ gene_set_classifier   = "local"   # v6: Gemma scores gene-set relevance
 robustness_reading    = "local"   # v6: per-perturbation verdict reading
 provenance_enrichment = "local"   # v6: provenance metadata enrichment
 formalizer_stage1     = "claude"
+formalizer_stage2     = "claude"
 methodologist         = "claude"  # v6: picks statistical tests
 interpreter           = "claude"  # v6: reads compute results
 skeptic               = "claude"
 # ... (see backend/nullifier/config/default_config.toml for full table)
+
+[gene_sets]
+cache_ttl_days = 7
+min_score = 2
+process_min_score = 3
+max_primary_process_sets = 10
+max_primary_set_size = 250
 
 [compute]
 alpha               = 0.05
@@ -354,7 +362,8 @@ If you reroute all local tasks to Claude, expect roughly ~$0.25–0.60 per run.
 - **Hybrid routing.** High-volume classification and scoring use a local model; reasoning-heavy tasks use Claude. Routing is configurable per task in `~/.nullifier/config.toml`.
 - **Event-driven pipeline.** `pipeline.py` is a synchronous generator yielding typed events. The CLI drains them to a Rich console; the server fans them out over WebSocket to all connected clients.
 - **Deterministic compute layer.** Statistical tests in `tools/compute.py` are pure functions — same data always produces the same result. The Methodologist chooses which tests to run; compute just executes them.
-- **Graceful degradation.** Each literature source is independently wrapped with a circuit breaker. LM Studio being unavailable is surfaced at startup; per-task errors emit `run_failed`, not crashes.
+- **Focused gene-set compute.** Gene-set expansion keeps broad matching catalogs as exploratory context, while only primary, size-capped sets enter expensive genomic data fetching and statistical tests.
+- **Graceful degradation.** Each literature source is independently wrapped with a circuit breaker. LM Studio being unavailable is surfaced at startup; Librarian query and synthesis failures degrade individual claims where possible, and unrecoverable task errors emit `run_failed` events instead of crashing the server.
 - **Verbatim quote requirement.** Every paper classification must include a verbatim abstract sentence, enforced in Librarian prompts and checked by the Skeptic.
 - **Flag learning is prompting, not fine-tuning.** User corrections are stored in the configured `flags.db_path` (default `~/.nullifier/flags.db`) and injected as few-shot examples on future runs with matching domain/entities.
 - **`NOVEL-UNTESTED` is not `WEAK`.** A hypothesis with no prior literature is uninvestigated, not disproven.
