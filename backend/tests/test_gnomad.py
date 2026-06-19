@@ -11,8 +11,8 @@ from nullifier.tools import gnomad as g
 
 
 _FAKE_CONSTRAINT = {
-    "loeuf": 0.42,
-    "pLI": 0.98,
+    "oe_lof_upper": 0.42,
+    "pli": 0.98,
     "syn_z": 0.1,
     "mis_z": 2.3,
     "obs_lof": 3,
