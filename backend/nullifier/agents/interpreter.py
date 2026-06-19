@@ -74,13 +74,29 @@ def run_interpreter(
         }
     user = _build_user_prompt(formalized, expansion, compute_results, gene_data, robustness, reproducibility)
     out = llm_call_json("interpreter", INTERPRETER_SYSTEM, user, max_tokens=3500)
-    if isinstance(out, dict):
-        limitations = list(out.get("limitations") or [])
-        if risk_disclaimer not in limitations:
-            limitations.append(risk_disclaimer)
-        if _has_rerconverge(compute_results) and ASSOCIATION_ONLY_GUARD not in limitations:
+    if not isinstance(out, dict):
+        limitations = [
+            f"Interpreter returned an invalid root type ({type(out).__name__}); expected a JSON object.",
+            risk_disclaimer,
+        ]
+        if _has_rerconverge(compute_results):
             limitations.append(ASSOCIATION_ONLY_GUARD)
-        out["limitations"] = limitations
+        return {
+            "patterns_observed": [],
+            "outlier_genes": [],
+            "regulatory_overlap": {},
+            "reproducibility_check": [],
+            "limitations": limitations,
+            "overall_genomic_assessment": "inconclusive",
+            "assessment_justification": "The interpreter response did not satisfy its JSON object contract.",
+        }
+
+    limitations = list(out.get("limitations") or [])
+    if risk_disclaimer not in limitations:
+        limitations.append(risk_disclaimer)
+    if _has_rerconverge(compute_results) and ASSOCIATION_ONLY_GUARD not in limitations:
+        limitations.append(ASSOCIATION_ONLY_GUARD)
+    out["limitations"] = limitations
     return out
 
 

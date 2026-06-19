@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +11,7 @@ from nullifier.tools.paml import (
     _cache_get,
     _cache_set,
     _label_newick,
+    _run_codeml,
     _write_phylip,
     run_branch_model,
 )
@@ -49,7 +51,7 @@ def test_lrt_computed():
         return -1234.5 if "null" in path else -1230.0
 
     with patch("shutil.which", return_value="/usr/bin/codeml"), \
-         patch("nullifier.tools.paml._run_codeml", return_value=True), \
+         patch("nullifier.tools.paml._run_codeml", return_value={"status": "ok"}), \
          patch("nullifier.tools.paml._parse_lnl", side_effect=fake_parse_lnl), \
          patch("nullifier.tools.paml._parse_omega_foreground", return_value=2.5):
         r = run_branch_model("ENSG00000003", "SHANK3", _PRIMATE_ALIGNED, use_cache=False)
@@ -58,6 +60,54 @@ def test_lrt_computed():
     assert abs(r["lrt_chi2"] - 9.0) < 0.01
     assert r["lrt_pvalue"] < 0.05
     assert r["omega_foreground"] == 2.5
+
+
+def test_codeml_nonzero_exit_returns_bounded_sanitized_diagnostics():
+    output = b"x" * 2500 + b" C:\\temp\\paml\\failure"
+    completed = subprocess.CompletedProcess([], 2, stdout=output, stderr=output)
+    with patch("nullifier.tools.paml._find_codeml", return_value="codeml"), \
+         patch("nullifier.tools.paml.subprocess.run", return_value=completed):
+        result = _run_codeml("C:\\temp\\paml\\codeml.ctl", "C:\\temp\\paml")
+
+    assert result["status"] == "error"
+    assert result["returncode"] == 2
+    assert len(result["stdout"]) <= 2000
+    assert "C:\\temp\\paml" not in result["stdout"]
+    assert "<workdir>" in result["stdout"]
+
+
+def test_codeml_timeout_preserves_bounded_diagnostics():
+    exc = subprocess.TimeoutExpired("codeml", 3, output=b"partial", stderr=b"stalled")
+    with patch("nullifier.tools.paml._find_codeml", return_value="codeml"), \
+         patch("nullifier.tools.paml.subprocess.run", side_effect=exc):
+        result = _run_codeml("codeml.ctl", "C:\\temp\\paml", timeout=3)
+
+    assert result == {
+        "status": "timeout",
+        "note": "codeml timed out after 3 seconds",
+        "stdout": "partial",
+        "stderr": "stalled",
+    }
+
+
+def test_branch_model_reports_codeml_phase_failure():
+    diagnostic = {
+        "status": "error",
+        "returncode": 1,
+        "stderr": "bad alignment",
+        "stdout": "",
+        "note": "codeml exited with a nonzero status",
+    }
+    with patch("nullifier.tools.paml._find_codeml", return_value="codeml"), \
+         patch("nullifier.tools.paml._run_codeml", return_value=diagnostic):
+        result = run_branch_model(
+            "ENSG00000003", "SHANK3", _PRIMATE_ALIGNED, use_cache=False
+        )
+
+    assert result["status"] == "error"
+    assert result["phase"] == "null"
+    assert result["returncode"] == 1
+    assert result["stderr"] == "bad alignment"
 
 
 def test_cache_roundtrip():

@@ -479,6 +479,80 @@ def test_interpreter_adds_rerconverge_association_guard(monkeypatch):
     assert any("not directional or causal" in limitation for limitation in out["limitations"])
 
 
+def test_interpreter_invalid_root_type_returns_inconclusive_fallback(monkeypatch):
+    monkeypatch.setattr(interpreter, "llm_call_json", lambda *args, **kwargs: [])
+
+    out = interpreter.run_interpreter(
+        {"core_hypothesis": "h", "atomic_claims": []},
+        {"starter": []},
+        {"tests": [], "corrections_applied": [], "data_summary": {}},
+        {},
+    )
+
+    assert out["overall_genomic_assessment"] == "inconclusive"
+    assert out["patterns_observed"] == []
+    assert "invalid root type (list)" in out["limitations"][0]
+
+
+def test_gnomad_fetch_uses_nested_ensembl_ids(monkeypatch):
+    calls = []
+
+    def fake_fetch(ensembl_id):
+        calls.append(ensembl_id)
+        return {"loeuf": 0.42}
+
+    monkeypatch.setattr(analyst, "fetch_constraint", fake_fetch)
+    gene_data = {
+        "SYP": {"info": {"ensembl_id": "ENSG_SYP"}},
+        "MISSING": {"_error": "not found in Ensembl"},
+        "NO_ID": {"info": {"symbol": "NO_ID"}},
+    }
+
+    out = analyst._fetch_gnomad_data(gene_data)
+
+    assert calls == ["ENSG_SYP"]
+    assert out == {"SYP": {"loeuf": 0.42}}
+
+
+def test_paml_failures_emit_structured_events(monkeypatch):
+    emitted = []
+    gene_data = {
+        "NOID": {"info": {}},
+        "NOALIGN": {"info": {"ensembl_id": "ENSG_NOALIGN"}},
+        "CODEML": {"info": {"ensembl_id": "ENSG_CODEML"}},
+    }
+    monkeypatch.setattr(
+        analyst.ensembl,
+        "fetch_gene_tree_aligned",
+        lambda ensg, use_cache=True: None if ensg == "ENSG_NOALIGN" else {"sequences": {}, "newick": ""},
+    )
+    monkeypatch.setattr(
+        "nullifier.tools.paml.run_branch_model",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "note": "codeml exited with a nonzero status",
+            "phase": "null",
+            "returncode": 1,
+            "stderr": "failure",
+        },
+    )
+
+    analyst._fetch_paml_data(
+        gene_data,
+        ["NOID", "NOALIGN", "CODEML"],
+        on_event=emitted.append,
+    )
+
+    failures = [event for event in emitted if event.type == "paml.gene_failed"]
+    assert [(event.payload["gene"], event.payload["status"]) for event in failures] == [
+        ("NOID", "error"),
+        ("NOALIGN", "no_compara_alignment"),
+        ("CODEML", "error"),
+    ]
+    assert failures[-1].payload["phase"] == "null"
+    assert failures[-1].payload["returncode"] == 1
+
+
 def test_analyst_comparability_screen_drops_low_coverage_but_keeps_starters(monkeypatch):
     expansion = {
         "starter": ["S1"],

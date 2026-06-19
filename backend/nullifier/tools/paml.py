@@ -1,6 +1,7 @@
 """PAML codeml branch-model ω for lineage-specific selection."""
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -17,6 +18,8 @@ _CACHE_TTL_DAYS = 90
 
 _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
+logger = logging.getLogger(__name__)
+_PROCESS_OUTPUT_LIMIT = 2000
 
 _FOREGROUND_GROUPS = {
     "primates": {"Homo_sapiens", "Pan_troglodytes", "Gorilla_gorilla",
@@ -141,10 +144,18 @@ def _write_control(workdir: str, model: int, seqfile: str, treefile: str, outfil
     return ctl
 
 
-def _run_codeml(ctl_path: str, workdir: str, timeout: int = 300):
+def _bounded_process_output(value, workdir: str) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return str(value).replace(workdir, "<workdir>")[-_PROCESS_OUTPUT_LIMIT:]
+
+
+def _run_codeml(ctl_path: str, workdir: str, timeout: int = 300) -> dict:
     binary = _find_codeml()
     if not binary:
-        return "unavailable"
+        return {"status": "unavailable", "note": "codeml executable is unavailable"}
     try:
         result = subprocess.run(
             [binary, ctl_path],
@@ -152,11 +163,46 @@ def _run_codeml(ctl_path: str, workdir: str, timeout: int = 300):
             timeout=timeout,
             capture_output=True,
         )
-        return "ok" if result.returncode == 0 else "error"
-    except subprocess.TimeoutExpired:
-        return "timeout"
-    except OSError:
-        return "error"
+        diagnostic = {
+            "status": "ok" if result.returncode == 0 else "error",
+            "returncode": result.returncode,
+            "stdout": _bounded_process_output(result.stdout, workdir),
+            "stderr": _bounded_process_output(result.stderr, workdir),
+        }
+        if result.returncode != 0:
+            diagnostic["note"] = "codeml exited with a nonzero status"
+            logger.warning("codeml failed: %s", diagnostic)
+        return diagnostic
+    except subprocess.TimeoutExpired as exc:
+        diagnostic = {
+            "status": "timeout",
+            "note": f"codeml timed out after {timeout} seconds",
+            "stdout": _bounded_process_output(exc.stdout, workdir),
+            "stderr": _bounded_process_output(exc.stderr, workdir),
+        }
+        logger.warning("codeml timed out: %s", diagnostic)
+        return diagnostic
+    except OSError as exc:
+        diagnostic = {
+            "status": "error",
+            "note": "codeml could not be executed: " + _bounded_process_output(exc, workdir),
+        }
+        logger.warning("codeml execution error: %s", diagnostic)
+        return diagnostic
+
+
+def _codeml_failure(gene: str, phase: str, diagnostic: dict) -> dict:
+    return {
+        "status": "timeout" if diagnostic.get("status") == "timeout" else "error",
+        "gene": gene,
+        "phase": phase,
+        "note": diagnostic.get("note") or f"codeml {phase} model failed",
+        **{
+            key: diagnostic[key]
+            for key in ("returncode", "stdout", "stderr")
+            if diagnostic.get(key) is not None
+        },
+    }
 
 
 def _parse_lnl(mlc_path: str) -> float | None:
@@ -249,7 +295,11 @@ def run_branch_model(
         return hit
 
     if not _find_codeml():
-        return {"status": "codeml_unavailable", "gene": gene_symbol}
+        return {
+            "status": "codeml_unavailable",
+            "gene": gene_symbol,
+            "note": "codeml executable is unavailable",
+        }
 
     with tempfile.TemporaryDirectory() as workdir:
         seq_path  = os.path.join(workdir, "aln.phy")
@@ -261,21 +311,28 @@ def run_branch_model(
         # null model — one ratio (model=0)
         ctl0 = _write_control(workdir, 0, seq_path, tree_path, "null_mlc")
         status0 = _run_codeml(ctl0, workdir)
-        if status0 == "timeout":
-            return {"status": "timeout", "gene": gene_symbol, "timeout_seconds": 300}
+        if status0.get("status") != "ok":
+            return _codeml_failure(gene_symbol, "null", status0)
         lnl0 = _parse_lnl(os.path.join(workdir, "null_mlc"))
 
         # alternative model — branch model 2
         ctl2 = _write_control(workdir, 2, seq_path, tree_path, "alt_mlc")
         status2 = _run_codeml(ctl2, workdir)
-        if status2 == "timeout":
-            return {"status": "timeout", "gene": gene_symbol, "timeout_seconds": 300}
+        if status2.get("status") != "ok":
+            return _codeml_failure(gene_symbol, "alternative", status2)
         lnl2     = _parse_lnl(os.path.join(workdir, "alt_mlc"))
         omega_fg = _parse_omega_foreground(os.path.join(workdir, "alt_mlc"))
         omega_bg = _parse_omega_background(os.path.join(workdir, "alt_mlc"))
 
     if lnl0 is None or lnl2 is None:
-        return {"status": "error", "gene": gene_symbol, "note": "codeml output unreadable"}
+        result = {
+            "status": "error",
+            "gene": gene_symbol,
+            "phase": "output_parse",
+            "note": "codeml output unreadable",
+        }
+        logger.warning("PAML output parsing failed: %s", result)
+        return result
 
     from scipy.stats import chi2 as _chi2
     lrt  = max(-2.0 * (lnl0 - lnl2), 0.0)

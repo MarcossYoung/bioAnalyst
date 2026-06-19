@@ -246,6 +246,16 @@ def paml_gene_timeout(gene: str) -> Event:
     return Event("paml.gene_timeout", {"gene": gene})
 
 
+def paml_gene_failed(gene: str, status: str, note: str,
+                     diagnostics: dict | None = None) -> Event:
+    return Event("paml.gene_failed", {
+        "gene": gene,
+        "status": status,
+        "note": note,
+        **(diagnostics or {}),
+    })
+
+
 def rdnds_gene_started(gene: str) -> Event:
     return Event("rdnds.gene_started", {"gene": gene})
 

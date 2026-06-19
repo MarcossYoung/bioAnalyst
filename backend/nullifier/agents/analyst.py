@@ -1,3 +1,4 @@
+import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from statistics import mean, median, stdev
@@ -15,6 +16,9 @@ from ..config.loader import load_config
 from ..provenance import make_provenance
 from .. import events as ev
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
+
+
+logger = logging.getLogger(__name__)
 
 
 ANALYST_SPLIT_SPEC = AgentSpec(
@@ -41,7 +45,10 @@ ANALYST_SPLIT_SPEC = AgentSpec(
 
 
 def _fetch_gnomad_data(gene_data: dict) -> dict:
-    jobs = {sym: (d or {}).get("ensembl_id") for sym, d in gene_data.items()}
+    jobs = {
+        sym: ((d or {}).get("info") or {}).get("ensembl_id")
+        for sym, d in gene_data.items()
+    }
     results: dict = {}
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {pool.submit(fetch_constraint, ensg): sym
@@ -64,20 +71,42 @@ def _fetch_paml_data(
 ) -> dict:
     from ..tools import paml
     results = {}
+
+    def _emit_failure(sym: str, result: dict) -> None:
+        logger.warning("PAML failed for %s: %s", sym, result)
+        if on_event:
+            on_event(ev.paml_gene_failed(
+                sym,
+                result.get("status") or "error",
+                result.get("note") or "PAML analysis failed",
+                diagnostics={
+                    key: result[key]
+                    for key in ("phase", "returncode", "stderr", "stdout")
+                    if result.get(key) is not None
+                },
+            ))
+
     for sym in starter_genes:
         if on_event:
             on_event(ev.paml_gene_started(sym, foreground))
         d = gene_data.get(sym, {})
         if "_error" in d:
             results[sym] = {"status": "error", "note": d["_error"]}
+            _emit_failure(sym, results[sym])
             continue
         ensg = (d.get("info") or {}).get("ensembl_id")
         if not ensg:
             results[sym] = {"status": "error", "note": "no ensembl_id"}
+            _emit_failure(sym, results[sym])
             continue
         aligned = ensembl.fetch_gene_tree_aligned(ensg, use_cache=use_cache)
         if not aligned:
-            results[sym] = {"status": "no_compara_alignment", "gene": sym}
+            results[sym] = {
+                "status": "no_compara_alignment",
+                "gene": sym,
+                "note": "no Ensembl Compara alignment available",
+            }
+            _emit_failure(sym, results[sym])
             continue
         results[sym] = paml.run_branch_model(
             ensg, sym, aligned, foreground=foreground, use_cache=use_cache
@@ -92,6 +121,8 @@ def _fetch_paml_data(
                 result.get("omega_background"),
                 result.get("lrt_pvalue"),
             ))
+        elif result.get("status") != "computed":
+            _emit_failure(sym, result)
     return results
 
 
