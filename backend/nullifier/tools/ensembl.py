@@ -369,6 +369,7 @@ def screen_panel_coverage_by_id_batch(
     panel: list[str],
     use_cache: bool = True,
     batch_size: int | None = None,
+    on_progress=None,
 ) -> dict[str, dict]:
     """Cheap batch screen for whether genes have orthologs in panel species.
 
@@ -393,18 +394,22 @@ def screen_panel_coverage_by_id_batch(
             pool.submit(_panel_species_for_id, ensg, use_cache): ensg
             for ensg in ids
         }
+        fetched = 0
         for fut in as_completed(futures):
             ensg = futures[fut]
             try:
                 species = fut.result()
             except Exception as e:
                 print(f"[ensembl] panel coverage for {ensg} failed: {e}", file=sys.stderr)
-                continue
-            panel_species = species & panel_set
-            out[ensg] = {
-                "species_count": len(panel_species),
-                "panel_species": panel_species,
-            }
+            else:
+                panel_species = species & panel_set
+                out[ensg] = {
+                    "species_count": len(panel_species),
+                    "panel_species": panel_species,
+                }
+            fetched += 1
+            if on_progress:
+                on_progress(fetched, len(ids))
     return out
 
 

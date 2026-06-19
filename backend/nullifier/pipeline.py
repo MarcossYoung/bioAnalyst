@@ -1,3 +1,5 @@
+import queue
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Generator
 
@@ -110,17 +112,39 @@ def run_pipeline(
                 yield ev.gene_sets_expanded(expansion)
 
                 # 2. Fetch all genomic data
-                analyst_events: list[ev.Event] = []
-                analyst_data = run_analyst(
-                    all_targets=gene_sets.all_genes(expansion),
-                    expansion=expansion,
-                    formalized=formalized,
-                    starter_entities=starter_entities,
-                    completed_analysis=completed_analysis,
-                    on_event=analyst_events.append,
+                analyst_events: queue.Queue[ev.Event | None] = queue.Queue()
+                analyst_box: dict = {}
+
+                def _run_analyst_worker() -> None:
+                    try:
+                        analyst_box["data"] = run_analyst(
+                            all_targets=gene_sets.all_genes(expansion),
+                            expansion=expansion,
+                            formalized=formalized,
+                            starter_entities=starter_entities,
+                            completed_analysis=completed_analysis,
+                            on_event=analyst_events.put,
+                        )
+                    except BaseException as exc:
+                        analyst_box["error"] = exc
+                    finally:
+                        analyst_events.put(None)
+
+                analyst_thread = threading.Thread(
+                    target=_run_analyst_worker,
+                    daemon=True,
+                    name="analyst",
                 )
-                for e in analyst_events:
-                    yield e
+                analyst_thread.start()
+                while True:
+                    analyst_event = analyst_events.get()
+                    if analyst_event is None:
+                        break
+                    yield analyst_event
+                analyst_thread.join()
+                if analyst_box.get("error"):
+                    raise analyst_box["error"]
+                analyst_data = analyst_box["data"]
 
                 analyst_data["data"]["paml"] = analyst_data.get("paml_data", {})
 

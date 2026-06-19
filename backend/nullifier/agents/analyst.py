@@ -254,16 +254,43 @@ def _resolve_ensembl_ids_for_screen(
         elif upper in syngo_ids:
             resolved[gene] = syngo_ids[upper]
 
-    for gene in targets:
-        if gene in resolved:
-            continue
-        info = ensembl.lookup_gene(gene, use_cache=use_cache)
-        if not info or not info.get("ensembl_id"):
-            continue
-        resolved[gene] = info["ensembl_id"]
-        resolved_from = info.get("_resolved_from")
-        if resolved_from and on_event:
-            on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
+    unresolved = [gene for gene in targets if gene not in resolved]
+    if on_event:
+        on_event(ev.analyst_progress(
+            "resolve_ensembl_ids",
+            len(targets) - len(unresolved),
+            len(targets),
+            "resolved from cached gene-set IDs",
+        ))
+
+    completed = len(targets) - len(unresolved)
+    workers = max(1, min(8, len(unresolved)))
+    if unresolved:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(ensembl.lookup_gene, gene, use_cache): gene
+                for gene in unresolved
+            }
+            for fut in as_completed(futures):
+                gene = futures[fut]
+                completed += 1
+                try:
+                    info = fut.result()
+                except Exception as e:
+                    print(f"[analyst] Ensembl lookup for {gene} failed: {e}", file=sys.stderr)
+                    info = None
+                if info and info.get("ensembl_id"):
+                    resolved[gene] = info["ensembl_id"]
+                    resolved_from = info.get("_resolved_from")
+                    if resolved_from and on_event:
+                        on_event(ev.analyst_symbol_resolved(resolved_from, info["symbol"]))
+                if on_event:
+                    on_event(ev.analyst_progress(
+                        "resolve_ensembl_ids",
+                        completed,
+                        len(targets),
+                        "resolving target genes to Ensembl IDs",
+                    ))
     return resolved
 
 
@@ -282,10 +309,18 @@ def _screen_comparable(
     for gene, ensg in target_to_ensg.items():
         ensg_to_targets.setdefault(ensg, []).append(gene)
 
+    coverage_kwargs = {"use_cache": use_cache}
+    if on_event:
+        coverage_kwargs["on_progress"] = lambda n, total: on_event(ev.analyst_progress(
+            "screen_panel_coverage",
+            n,
+            total,
+            "checking mammal ortholog coverage",
+        ))
     coverage_by_id = ensembl.screen_panel_coverage_by_id_batch(
         list(ensg_to_targets.keys()),
         panel,
-        use_cache=use_cache,
+        **coverage_kwargs,
     )
 
     kept: list[str] = []

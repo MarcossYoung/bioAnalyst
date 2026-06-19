@@ -170,6 +170,15 @@ def analyst_comparability_screen(total: int, kept: int, dropped: int, threshold:
     })
 
 
+def analyst_progress(step: str, completed: int, total: int, message: str = "") -> Event:
+    return Event("analyst_progress", {
+        "step": step,
+        "completed": completed,
+        "total": total,
+        "message": message,
+    })
+
+
 def analyst_gene_fetched(gene: str, status: str) -> Event:
     return Event("analyst_gene_fetched", {"gene": gene, "status": status})
 

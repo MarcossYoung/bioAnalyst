@@ -14,6 +14,7 @@ const STAGE_KEY: Record<string, string> = {
   paper_classified: 'librarian', synthesis_ready: 'librarian',
   classifier_degraded: 'librarian',
   analyst_started: 'analyst', analyst_comparability_screen: 'analyst',
+  analyst_progress: 'analyst',
   analyst_gene_fetched: 'analyst',
   analyst_symbol_resolved: 'analyst', analyst_phylo_loaded: 'analyst',
   analyst_gnomad_fetched: 'analyst', analyst_paml_complete: 'analyst',
@@ -81,6 +82,10 @@ function eventLabel(ev: WsEvent): string {
     case 'synthesis_ready':       return `[${p.claim_id}] ${p.evidence_strength}`
     case 'classifier_degraded':   return `[${p.claim_id}] classifier degraded (${p.dropped}/${p.retrieved} dropped)`
     case 'analyst_comparability_screen': return `screened ${p.total} -> ${p.kept} comparable (${p.dropped} dropped)`
+    case 'analyst_progress': {
+      const msg = typeof p.message === 'string' && p.message ? ` - ${p.message}` : ''
+      return `${String(p.step)}: ${p.completed} / ${p.total}${msg}`
+    }
     case 'analyst_started':       return `analyst: ${p.gene_count} gene(s)`
     case 'analyst_gene_fetched':  return `  ${p.gene} — ${p.status}`
     case 'ensembl.batch_progress': return `Ensembl batch: ${p.fetched} / ${p.total}`
