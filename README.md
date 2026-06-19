@@ -37,11 +37,11 @@ python -m nullifier.cli run --input examples/synapse_bbb.txt --max-papers 3
 
 ## How It Works
 
-Six stages run in sequence:
+Six conceptual stages produce the report. After formalization, the Librarian runs in a background worker while the Analyst → Methodologist → Compute → Interpreter branch proceeds; the Skeptic waits for both branches:
 
 1. **Formalizer** — Extracts the falsifiable core from scaffolding (methods, cited literature, starter data). Decomposes it into atomic claims with null hypotheses and normalizes common structured-output variants from the model. Detects whether the input includes completed analyses (reported statistics, sample sizes) and flags them for reproducibility checking. Presents the result for confirmation before the expensive retrieval step runs.
 
-2. **Librarian** — For each atomic claim, generates 5–8 query variants, searches four literature sources in parallel, deduplicates, and classifies each paper as `supports / contradicts / tangential / confounder`. Every classification requires a verbatim abstract quote. Claim-level query or synthesis failures degrade to `absent / unstudied` evidence for that claim instead of ending the whole run.
+2. **Librarian** — For each atomic claim, runs a bounded evidence hunt. The seed round generates 5–8 query variants and searches four literature sources in parallel; later rounds use a Claude hunter to target contradictory findings, confounders, and alternative mechanisms. A deterministic critic stops on evidence targets, saturation, or configured budgets. Classifications are `supports / contradicts / tangential / confounder` and require a source-verified abstract or Semantic Scholar snippet quote. Claim-level failures degrade evidence instead of ending the whole run.
 
 3. **Analyst** _(when starter entities are provided)_ — Expands the hypothesis gene list against canonical SynGO and BBB gene sets (scored for relevance by a local Gemma classifier, with a heuristic fallback for set relevance). Expansion is split into primary sets used for compute and exploratory sets retained for context, so broad ontology hits do not automatically turn into thousands of expensive gene tests. Fetches Ensembl genomic data for the primary target genes (orthologs, dN/dS, regulatory features, motif overlap).
 
@@ -63,6 +63,8 @@ Per-paper classification and gene-set relevance scoring use a local LLM (LM Stud
 | bioRxiv / medRxiv | Preprints (via Europe PMC `SRC:PPR`)          |
 
 Sources are queried in parallel. If any source is unavailable, the run continues with the remaining ones (circuit breaker per host).
+
+Semantic Scholar uses enriched `/paper/search` metadata and `/paper/search/match` for cited-title validation. Optional `/snippet/search` passage evidence is disabled by default and can be enabled under `[literature]`; an API key is strongly recommended for that path.
 
 ## Installation
 
@@ -158,6 +160,8 @@ request_timeout_seconds = 300
 
 [routing]
 librarian_per_paper   = "local"   # high-volume — local is ~10× cheaper
+librarian_hunter      = "claude"  # falsification-targeted follow-up queries
+librarian_synthesizer = "claude"  # claim-level evidence synthesis
 gene_set_classifier   = "local"   # v6: Gemma scores gene-set relevance
 robustness_reading    = "local"   # v6: per-perturbation verdict reading
 provenance_enrichment = "local"   # v6: provenance metadata enrichment
@@ -167,6 +171,18 @@ methodologist         = "claude"  # v6: picks statistical tests
 interpreter           = "claude"  # v6: reads compute results
 skeptic               = "claude"
 # ... (see backend/nullifier/config/default_config.toml for full table)
+
+[literature]
+hunt_max_rounds = 3
+hunt_min_rounds = 2
+hunt_patience = 1
+hunt_target_contradicting = 2
+hunt_target_sources = 2
+semantic_scholar_fields_of_study = "Biology,Medicine"
+semantic_scholar_min_citations = 0
+use_snippet_search = false
+snippet_search_query_limit = 2
+snippet_search_result_limit = 10
 
 [gene_sets]
 cache_ttl_days = 7
@@ -313,7 +329,7 @@ bioAnalyst/
 │       │   ├── genomic_data.py     v6: typed data builder for compute layer
 │       │   ├── provenance.py       v6: provenance record construction
 │       │   ├── flag_store.py       SQLite flag DB + few-shot injection
-│       │   └── sources/            semantic_scholar, openalex, europe_pmc, biorxiv
+│       │   └── sources/            Semantic Scholar search/snippets, OpenAlex, Europe PMC, bioRxiv
 │       ├── store/runs.py       SQLite runs + events DB (~/.nullifier/runs.db)
 │       ├── config/             TOML config loader + defaults
 │       ├── review/             Interactive CLI flag-review TUI
@@ -364,6 +380,6 @@ If you reroute all local tasks to Claude, expect roughly ~$0.25–0.60 per run.
 - **Deterministic compute layer.** Statistical tests in `tools/compute.py` are pure functions — same data always produces the same result. The Methodologist chooses which tests to run; compute just executes them.
 - **Focused gene-set compute.** Gene-set expansion keeps broad matching catalogs as exploratory context, while only primary, size-capped sets enter expensive genomic data fetching and statistical tests.
 - **Graceful degradation.** Each literature source is independently wrapped with a circuit breaker. LM Studio being unavailable is surfaced at startup; Librarian query and synthesis failures degrade individual claims where possible, and unrecoverable task errors emit `run_failed` events instead of crashing the server.
-- **Verbatim quote requirement.** Every paper classification must include a verbatim abstract sentence, enforced in Librarian prompts and checked by the Skeptic.
+- **Source-verified quote requirement.** Abstract and full-text snippet quotations are stored separately and checked against their declared source. TLDR text can guide classification but cannot serve as quoted evidence.
 - **Flag learning is prompting, not fine-tuning.** User corrections are stored in the configured `flags.db_path` (default `~/.nullifier/flags.db`) and injected as few-shot examples on future runs with matching domain/entities.
 - **`NOVEL-UNTESTED` is not `WEAK`.** A hypothesis with no prior literature is uninvestigated, not disproven.
