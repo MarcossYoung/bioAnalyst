@@ -1,87 +1,315 @@
-Here's a full end-to-end trace. I'll invent a plausible synapse_bbb.txt consistent with the docs (a co-evolution hypothesis), run it through every stage with the genetics made concrete, then show the same run resolving to STRONG, FALSIFIED, and RESULTS-PROBLEMATIC. At each stage I'll mark [SEAM] where the tool assumes something a generic version wouldn't.
+# Nullifier end-to-end execution trace
 
-The input (synapse_bbb.txt)
+This document follows one hypothesis from submission to verdict using the current pipeline structure. It complements [dataFlow.md](dataFlow.md), [productStructure.md](productStructure.md), and [README.md](README.md).
 
-"Synaptic and blood-brain-barrier genes co-evolved under shared selective pressure. Because the synapse depends on a tightly regulated extracellular environment maintained by the BBB, I expect synaptic genes (SynGO) and BBB genes to show comparable evolutionary constraint, more similar to each other than either is to matched control genes. Starter entities: DLG4, GRIN1, SHANK3, CLDN5, OCLN, SLC2A1."
+## Example input
 
-Note it's free-form prose with starter genes and no reported statistics — so this run will not trigger the RESULTS-PROBLEMATIC path (I'll add that variant at the end).
+`examples/synapse_bbb.txt` describes a co-evolution hypothesis:
 
-Stage 1 — Formalizer (Claude)
-Extracts the falsifiable core and decomposes it into atomic claims, each with a null hypothesis:
+> Synaptic and blood-brain-barrier genes co-evolved under shared selective pressure. Synaptic and BBB genes should show comparable evolutionary constraint and should be more similar to each other than either is to matched controls. Starter entities: DLG4, GRIN1, SHANK3, CLDN5, OCLN, SLC2A1.
 
-C1: Synaptic genes show stronger purifying selection (lower dN/dS) than matched controls. H₀: dN/dS(synaptic) = dN/dS(control).
-C2: BBB genes show stronger purifying selection than matched controls. H₀: dN/dS(BBB) = dN/dS(control).
-C3: Synaptic and BBB constraint distributions are more similar to each other than to controls. H₀: the two sets are drawn from the same distribution as controls / no greater mutual similarity.
+The input is free-form prose. It may also contain cited papers, proposed methods, starter data, or completed analyses with reported statistics.
 
-It detects no completed analysis (no p-values in the text), flags starter_entities = [DLG4, GRIN1, SHANK3, CLDN5, OCLN, SLC2A1], and presents this for confirmation. You'd see this in the ConfirmModal and could edit/drop a claim before the expensive retrieval runs.
-=
+## Execution topology
 
-Stage 2 — Librarian (Gemma per-paper, Claude synthesis)
-For each atomic claim, the Query Expander generates 5–8 variants and hits all four sources. For C1 you'd get queries like "synaptic gene evolutionary conservation dN/dS," "postsynaptic density purifying selection," "SynGO constraint primate." Each retrieved paper is classified by local Gemma as supports / contradicts / tangential / confounder with a verbatim abstract sentence.
-A plausible evidence picture:
+The conceptual six-stage product flow is implemented as a formalization stage, two concurrent evidence branches, and a final stress test:
 
-C1 (synaptic conserved): strongly supported. This is well-established — postsynaptic scaffolds and glutamate receptors are textbook conserved. Several supports.
-C2 (BBB conserved): thinner. Tight-junction proteins are conserved, but "BBB genes as a set under shared constraint" is less studied. Mix of supports and tangential.
-C3 (shared/co-evolution): likely sparse or absent. The specific co-evolution claim may have little or no direct literature → this is where novelty_flag fires.
+```text
+User input
+    │
+    ▼
+Formalizer stage 1 ──► optional confirmation/edit gate ──► Formalizer stage 2
+    │
+    ├───────────────────────────────┬──────────────────────────────────┐
+    │                               │                                  │
+    ▼                               ▼                                  │
+Librarian branch              Analyst branch                           │
+  query expansion               gene-set expansion                    │
+  bounded evidence hunt         genomic retrieval                     │
+  per-paper classification      typed genomic-data build              │
+  claim synthesis               methodologist                         │
+    │                            deterministic compute                 │
+    │                            robustness + reproducibility          │
+    │                            interpreter                           │
+    │                               │                                  │
+    └───────────────────────────────┴─────────────── join ─────────────┘
+                                                    │
+                                                    ▼
+                                                 Skeptic
+                                                    │
+                                                    ▼
+                                  report + events + persisted run
+```
 
-The Claude synthesizer rolls each claim's classifications into evidence_strength + gap + novelty_flag.
+`pipeline.py` starts the Librarian in a background worker before running the Analyst branch. Librarian events are collected in that worker and emitted when the branch joins. If no starter entities are present, the Analyst branch emits `analyst_skipped`, and the pipeline waits directly for the Librarian.
 
+## 1. Entry and orchestration
 
-Stage 3 — Gene-set assembly (gene_sets.py)
-Takes your 6 starter genes and expands against canonical sets:
+The same pipeline serves both product surfaces:
 
-set_a (synaptic): your synaptic starters anchor an expansion to the SynGO membership → ~tens to a few hundred genes.
-set_b (BBB): CLDN5/OCLN/SLC2A1 anchor the BBB set.
-controls: matched random genes (matched for length, GC, expression breadth — whatever the matching logic uses). This is the load-bearing piece. Without a matched control set, "synaptic genes have low dN/dS" is uninterpretable, because lots of genes have low dN/dS.
+- CLI: `python -m nullifier.cli run ...`
+- Web/API: `POST /api/runs`, with progress replayed and streamed over `GET /ws/runs/{run_id}`
 
-Gemma scores set relevance, heuristic fallback if LM Studio is down.
+`pipeline.py` is a synchronous event-yielding orchestrator. Events are persisted in `~/.nullifier/runs.db`, rendered by the CLI, and streamed to the React UI. Cancellation is checked between major stages and produces `run_aborted`; unrecoverable failures produce `run_failed`.
 
+## 2. Formalization and confirmation
 
-Stage 4 — Ensembl fetch + genomic_data builder
-For every gene in all three sets, ensembl.py pulls orthologs + dN/dS, paralogs, gene tree, regulatory features, motifs (cached 30 days). genomic_data.py assembles the typed GenomicData object the compute layer consumes.
-The dN/dS is the actual evidence: for each gene, the ratio of amino-acid-changing to silent substitutions against orthologs. Low ratio = purifying selection = "evolution is protecting this gene."
-[SEAM — the metric paradigm.] dN/dS is cross-species constraint. For human-disease genetics — especially neurodevelopmental, your father's world — the field-standard metric is LOEUF/pLI (gnomAD), which measures within-human-population intolerance to loss-of-function. A generic tool wants Ensembl to be one QuantitativeLens implementation among several (gnomAD-constraint lens, GTEx-expression lens, enrichment lens), all emitting a common evidence shape. This is the seam that coincides with your analyst_result shim — more on that below.
+### Stage 1: extraction
 
-Stage 5 — Methodologist (Claude)
-Reads the hypothesis + a summary of the genomic data and writes a test plan. For this hypothesis it would select:
+The first Claude call separates the research claim from its scaffolding and normalizes:
 
-Mann-Whitney U for C1: synaptic dN/dS vs control dN/dS (rank-based, because dN/dS is right-skewed, not normal).
-Mann-Whitney U for C2: BBB vs control.
-Kruskal-Wallis across all three sets for C3, or a distributional comparison testing whether A and B are mutually closer than to controls.
-Benjamini-Hochberg correction across the family of tests.
-Effect sizes (rank-biserial / Cliff's delta) and bootstrap CIs, because a biologist will not trust a p-value without an effect size.
+- `core_hypothesis`
+- `domain`
+- `key_entities` and `starter_entities`
+- cited literature
+- proposed and previously used methods
+- starter data
+- completed analyses and reported findings
 
-It picks which tests; it computes nothing.
+For the example, completed analysis is empty and the six starter genes are retained.
 
+### Confirmation gate
 
-Stage 6 — Compute + Robustness (compute.py, no LLM)
-Executes deterministically via scipy/statsmodels. Returns typed TestResult objects: statistic, raw p, corrected p, effect size, CI. Then the leave-one-out robustness pass: drop each gene, re-run, see if significance survives.
-This is the trust layer. A real geneticist's eye goes straight to: corrected p, effect size, and whether LOO holds.
+In the web flow, the backend emits `confirmation_required`. The user can keep, edit, or remove detected sections before expensive retrieval begins. The CLI can use the same callback or bypass it with `--no-confirm`.
 
-Stage 7 — Interpreter → Skeptic (Claude)
-Interpreter reads typed results in plain language (outlier genes, limitations). Skeptic independently re-checks all evidence — literature and compute — scores seven dimensions, lists alternative explanations, names a decisive experiment, and issues the verdict.
+### Stage 2: atomic claims
 
-Now the same run, three ways:
-→ STRONG
+The second Claude call decomposes the confirmed hypothesis into independently testable claims. A plausible decomposition is:
 
-C1: synaptic dN/dS median ≈ 0.08 vs control ≈ 0.22, Mann-Whitney p_adj < 0.001, large effect (Cliff's δ ≈ 0.6), robust — no single gene flips it. C2: BBB similarly low, p_adj < 0.01. C3: both sets cluster apart from controls. Literature independently supports C1 and C2. No credible contradictions.
+- **C1:** Synaptic genes show stronger purifying selection than matched controls. Null: their constraint distributions do not differ.
+- **C2:** BBB genes show stronger purifying selection than matched controls. Null: their constraint distributions do not differ.
+- **C3:** Synaptic and BBB constraint profiles are more similar to each other than either is to controls. Null: there is no excess cross-set similarity.
 
-What makes it STRONG: independent supporting lines (literature and statistics agree), large effects, LOO-robust. The Skeptic's job here is to try to break it and fail.
-→ FALSIFIED
+The output is emitted as `claims_formalized`. At this point the two evidence branches begin.
 
-C3 is the load-bearing claim. Suppose: synaptic genes ARE constrained (C1 holds), BBB genes are NOT distinguishable from controls (C2 fails, p_adj = 0.4), and the literature turns up a contradicts paper showing BBB endothelial genes evolve under relaxed constraint with lineage-specific turnover.
+## 3. Librarian branch: bounded disconfirming-evidence hunt
 
-The Skeptic issues FALSIFIED on the co-evolution claim as stated — C1 being true doesn't rescue C3. The decisive-experiment field might say: "test whether BBB constraint covaries with synaptic constraint within species lineages, not just at the set level." This is the most valuable kind of output — it kills a wrong idea before a grad student spends a year on it.
-(Contrast: if C3 had simply returned no literature at all rather than contradicting evidence, the verdict would be NOVEL-UNTESTED, not FALSIFIED — uninvestigated ≠ disproven.)
-→ RESULTS-PROBLEMATIC (the variant where the input includes completed analyses)
+The Librarian no longer performs one search-and-classify pass. Each atomic claim runs through a bounded actor/critic loop.
 
-Now imagine the input said: "We found synaptic genes have lower dN/dS than BBB genes (t-test, p = 0.03, n = 18)."
+### 3.1 Cited-literature validation
 
-The Skeptic's critique panel would flag, with HIGH severity:
+User-cited titles are checked before claim retrieval:
 
-Statistics: a t-test on dN/dS is wrong — the distribution is skewed, should be Mann-Whitney. Reviewer-in-a-box catch.
-Multiple testing: if multiple comparisons were run and only p = 0.03 reported, that's uncorrected → likely noise.
-Power: n = 18 is small; the result may hinge on one or two genes (this is exactly what LOO is designed to expose).
-Reproducibility: the Analyst tries to cross-check the reported dN/dS values against Ensembl-retrievable ones and flags any it can't verify.
+1. Semantic Scholar `GET /paper/search/match` attempts an exact title match.
+2. A successful result uses the API `matchScore`.
+3. A 404, throttling response, host failure, or unmatched title falls back to the existing federated search and local title/abstract similarity.
+4. Results retain the existing `validated` or `unverified` record shape.
 
-The UI then renders two verdict cards: left = the hypothesis verdict (from the falsifiability score), right = the critique breakdown.
+The Semantic Scholar call shares the per-run host circuit breaker with its other endpoints.
+
+### 3.2 Seed round
+
+For each claim, the Claude query expander generates approximately 5–8 variants. C1 might produce:
+
+- `synaptic gene evolutionary conservation dN/dS`
+- `postsynaptic density purifying selection`
+- `SynGO evolutionary constraint primate`
+
+Each query fans out to four sources through `tools/literature.py`:
+
+| Source | Role |
+|---|---|
+| Semantic Scholar | Relevance-ranked graph search with biological-field filters and enriched metadata |
+| OpenAlex | Broad scholarly coverage |
+| Europe PMC | Life-science literature |
+| bioRxiv/medRxiv | Preprints exposed through Europe PMC |
+
+Results are deduplicated by DOI or normalized title and ranked before classification. Semantic Scholar records can include TLDR, open-access PDF, publication type/date, and fields of study.
+
+### 3.3 Optional passage retrieval
+
+When `[literature] use_snippet_search = true`, the top query variants also call Semantic Scholar `GET /snippet/search`. This path is disabled by default because it is more aggressively rate-limited without `SEMANTIC_SCHOLAR_API_KEY`.
+
+The best passage is attached to a matching paper, or admitted as snippet-only evidence when capacity remains. Provenance stays explicit:
+
+- `justification_quote`: exact text verified against the abstract
+- `snippet_quote`: exact text verified against the Semantic Scholar passage
+- `quote_source`: `abstract`, `snippet`, or `none`
+
+A full-text snippet is never stored as an abstract quotation. TLDR text may help the classifier understand a paper but is not accepted as quoted evidence.
+
+### 3.4 Per-paper classification
+
+The high-volume classifier is routed to the configured `librarian_per_paper` backend, local LM Studio by default. It classifies each paper as:
+
+- `supports`
+- `contradicts`
+- `tangential`
+- `confounder`
+
+Relevant user corrections from `flags.db` are injected into the prompt. Batch failures remain aligned with their papers and are recorded in `failed_classifications`; a high failure fraction marks the claim `classifier_degraded` rather than silently treating missing classifications as an evidence void.
+
+### 3.5 Deterministic critic and hunter rounds
+
+After each round, a deterministic critic counts credible disconfirming classifications (`contradicts` or `confounder`) that contain a verified abstract or snippet quote. It also counts distinct retrieval sources.
+
+If the configured target has not been met, the Claude `librarian_hunter` proposes new queries aimed specifically at:
+
+- negative findings
+- contradictory results
+- confounders
+- alternative mechanisms
+- angles not covered by previous queries
+
+The next round searches and classifies only newly discovered papers. State accumulates across rounds.
+
+The loop stops with one of these reasons:
+
+| Stop reason | Meaning |
+|---|---|
+| `goal_met` | Required disconfirming evidence and source diversity were found |
+| `saturated` | Repeated rounds produced no new disconfirming evidence |
+| `budget_papers` | The per-claim paper cap was reached |
+| `budget_time` | The per-claim search deadline was reached |
+| `budget_rounds` | The configured round limit was exhausted |
+| `no_queries` | Seed expansion produced no usable query |
+| `exhausted` | The hunter produced no new query |
+
+Each claim records `queries_used`, `hunt_stop_reason`, `hunt_rounds`, and `hunt_trace`. The timeline receives `queries_expanded`, `papers_retrieved`, `paper_classified`, `hunt_round`, `classifier_degraded`, and `synthesis_ready` events.
+
+### 3.6 Claim synthesis
+
+The Claude synthesizer reads all accumulated classifications and returns:
+
+- evidence strength
+- novelty state
+- identified confounders
+- remaining literature gap
+- short synthesis
+
+For the example, C1 may be well studied, C2 may have mixed or thinner evidence, and the specific C3 co-evolution claim may be sparsely studied. Sparse evidence is not treated as contradiction.
+
+## 4. Analyst branch: gene sets to typed genomic evidence
+
+This branch runs while the Librarian is searching.
+
+### 4.1 Gene-set expansion
+
+`tools/gene_sets.py` maps starter entities into canonical SynGO, BBB, control, and background sets. Candidate sets are scored for relevance through the configured `gene_set_classifier`, with heuristic fallback where supported.
+
+Expansion is split into:
+
+- primary, size-capped sets used for genomic retrieval and compute
+- exploratory sets retained as context
+- matched controls and background genes
+
+The control set is essential: low dN/dS or high constraint is not informative without an appropriate comparison population.
+
+### 4.2 Genomic retrieval and diagnostics
+
+`agents/analyst.py` coordinates the evidence sources needed by the primary sets:
+
+- Ensembl/HGNC/Compara lookup, homology, alignments, regulatory features, and motifs
+- gnomAD LOEUF/pLI population constraint
+- phylostratigraphic gene age
+- optional PAML/codeml branch-model omega
+- R/seqinr pairwise dN/dS
+- diagnostic and false-positive risk checks
+
+Source-specific caches under `~/.nullifier/` avoid repeating expensive requests and calculations.
+
+### 4.3 Typed data build
+
+`tools/genomic_data.py` converts fetched records into the compute contract:
+
+- groups and variables
+- gene index
+- provenance records
+- evolutionary-rate vectors
+- risk-filtered and saturation-aware data summaries
+
+The Methodologist and Compute layer consume this typed structure rather than raw API responses.
+
+## 5. Methodologist, deterministic compute, and interpretation
+
+### Methodologist
+
+Claude reads the hypothesis, expansion, completed-analysis context, and genomic summary. It selects tests from the supported menu but performs no calculations. For the example it may choose rank-based set comparisons, a cross-set association test, multiple-testing correction, effect sizes, and bootstrap intervals.
+
+### Compute and robustness
+
+`agents/compute.py` invokes deterministic helpers in `tools/compute.py`. The same inputs therefore produce the same statistics. Outputs include typed test results, corrected p-values, effect sizes, confidence intervals, and provenance.
+
+The same stage also runs:
+
+- leave-one-out or configured perturbation robustness
+- reproducibility checks for completed analyses supplied by the user
+
+### Interpreter
+
+Claude translates typed results into a bounded scientific assessment, including limitations and influential genes. If dN/dS is saturated or risk filtering leaves too few scorable genes, the genomic assessment is explicitly marked `untestable` rather than forcing a conclusion.
+
+## 6. Join and Skeptic verdict
+
+The Skeptic runs only after the literature and genomic branches have completed. It reads:
+
+- formalized claims and null hypotheses
+- Librarian classifications, synthesis, degradation state, and top raw abstracts
+- gene-set expansion and genomic evidence
+- deterministic test results
+- robustness and reproducibility results
+- Interpreter assessment
+
+It then scores the evidence, identifies alternatives, names a decisive experiment, and issues the final verdict.
+
+### Illustrative outcomes
+
+These are outcome patterns, not hard-coded thresholds or expected results for the example dataset.
+
+#### `STRONG`
+
+The synaptic and BBB sets both differ materially from matched controls, effect sizes are meaningful, corrected results survive robustness checks, and literature evidence agrees without credible contradictions.
+
+#### `FALSIFIED`
+
+A load-bearing claim fails—for example, BBB genes do not differ from controls—and credible literature directly contradicts the proposed shared selective-pressure mechanism. Support for C1 alone does not rescue C3.
+
+#### `NOVEL-UNTESTED`
+
+The specific co-evolution claim has little prior literature and the genomic branch cannot test it decisively. Absence of evidence is reported as uninvestigated, not disproven.
+
+#### `RESULTS-PROBLEMATIC`
+
+If the input includes a completed analysis such as `t-test, p = 0.03, n = 18`, critique mode evaluates the reported methods separately. It can flag inappropriate distributional assumptions, missing multiple-testing correction, low power, sensitivity to individual genes, or values that cannot be reproduced from available sources. The UI presents the underlying hypothesis verdict alongside the completed-analysis critique.
+
+## 7. Final report and feedback loop
+
+`run_completed` carries four top-level products:
+
+- `formalized`
+- `evidence`
+- `analyst`
+- `verdict`
+
+The web UI renders live progress, evidence by claim, gene-set expansion, deterministic compute, robustness, genomic panels, provenance, and verdict cards. The CLI renders the same report through Rich.
+
+Users can review paper classifications after the run. Corrections are stored in `flags.db` and become relevant few-shot guidance in future Librarian classifications; this is prompt-based feedback, not model fine-tuning.
+
+## 8. Routing and failure behavior
+
+Default routing keeps high-volume tasks local and reasoning-heavy tasks on Claude:
+
+| Task | Default backend |
+|---|---|
+| Formalizer stages | Claude |
+| Query expander | Claude |
+| Librarian per-paper classifier | Local LM Studio |
+| Librarian hunter | Claude |
+| Librarian synthesizer | Claude |
+| Gene-set classifier | Local LM Studio |
+| Methodologist | Claude |
+| Compute | Python, no LLM |
+| Interpreter | Claude |
+| Skeptic | Claude |
+
+The pipeline is designed to preserve partial results:
+
+- A failed literature source trips its host breaker; remaining sources continue.
+- A failed hunter call stops follow-up retrieval for that claim and records the error.
+- Per-paper failures are retained with drop reasons and degradation state.
+- Query expansion or synthesis failures degrade the affected claim where possible.
+- Missing starter entities skip the genomic branch without blocking literature review.
+- Missing optional R/PAML capabilities degrade only the corresponding genomic axis.
+- An unrecoverable stage exception emits `run_failed`.
+
+The shipped defaults, including hunt limits and Semantic Scholar controls, are defined in `backend/nullifier/config/default_config.toml` and merged with user overrides from `~/.nullifier/config.toml`.

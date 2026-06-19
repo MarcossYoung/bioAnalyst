@@ -11,7 +11,8 @@ bioAnalyst/
 |   |   |-- test_gnomad.py
 |   |   |-- test_paml.py
 |   |   |-- test_phylo.py
-|   |   `-- test_r_bridge_dnds.py
+|   |   |-- test_r_bridge_dnds.py
+|   |   `-- test_semantic_scholar.py
 |   `-- nullifier/
 |       |-- cli.py                  # CLI entrypoint: run, serve, review, flags
 |       |-- server.py               # FastAPI REST, WebSocket, health, static SPA serving
@@ -43,6 +44,7 @@ bioAnalyst/
 |       |   |-- flag_store.py       # User correction storage and prompt formatting
 |       |   `-- sources/
 |       |       |-- semantic_scholar.py
+|       |       |-- semantic_scholar_snippets.py
 |       |       |-- openalex.py
 |       |       |-- europe_pmc.py
 |       |       `-- biorxiv.py
@@ -105,6 +107,7 @@ bioAnalyst/
 |-- CLAUDE.md
 |-- requirements.txt
 |-- dataFlow.md
+|-- end-to-end.md
 `-- productStructure.md
 ```
 

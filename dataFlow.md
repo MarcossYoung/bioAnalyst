@@ -1,5 +1,9 @@
 # bioAnalyst — Data Flow Map
 
+The stacked diagram groups components by dependency. At runtime, `pipeline.py`
+starts the Librarian in a background worker and runs the Analyst → Methodologist
+→ Compute → Interpreter branch concurrently; the Skeptic waits for both.
+
 ```text
                                   ┌─────────────────────────────────┐
                                   │  USER INPUT                     │
@@ -62,21 +66,26 @@
 │  │ scholar.py      │ │             │ │ pmc.py     │ │ rxiv  │ │    │
 │  └─────────────────┘ └─────────────┘ └────────────┘ └───────┘ │    │
 │  Dedupe by DOI/title → rank → return papers                   │    │
+│  Semantic Scholar: enriched search/match + optional snippets  │    │
 └──────────────────────────────┬────────────────────────────────┘    │
                                │                                     │
                                ▼                                     │
 ┌───────────────────────────────────────────────────────────────┐    │
 │  AGENT: Librarian                                             │    │
 │  ┌──────────────────────────────────────────────┐             │    │
-│  │  Step A — Per-paper classification           │◄────────────┘    │
+│  │  Step A — Bounded retrieval/classification   │◄────────────┘    │
 │  │  Routed to LM Studio/local, parallel         │  high volume     │
-│  │  Inputs:  paper abstract + claim             │                  │
+│  │  Inputs: abstract + optional TLDR/snippet     │                  │
 │  │  Outputs: supports/contradicts/tangential/   │                  │
-│  │           confounder + quoted sentence       │                  │
+│  │           confounder + source-verified quote │                  │
 │  │  Prior flags injected as few-shot ◄──── flag_store.py           │
 │  └──────────────────────────────────────────────┘                  │
 │  ┌──────────────────────────────────────────────┐                  │
-│  │  Step B — Per-claim synthesizer       Claude │                  │
+│  │  Step B — Critic + Claude hunter loop        │                  │
+│  │  Hunts disconfirming evidence until stopped  │                  │
+│  └──────────────────────────────────────────────┘                  │
+│  ┌──────────────────────────────────────────────┐                  │
+│  │  Step C — Per-claim synthesizer       Claude │                  │
 │  │  Reads all classifications for one claim →   │                  │
 │  │  novelty_flag, evidence_strength, gaps       │                  │
 │  └──────────────────────────────────────────────┘                  │
@@ -213,6 +222,7 @@
 | Formalizer | Claude | 2 calls / run |
 | Query Expander | Claude | ~3–5 calls / run |
 | Librarian per-paper | Local LM Studio | 30–50 calls / run |
+| Librarian hunter | Claude | 0–2 follow-up calls / claim by default |
 | Librarian synthesizer | Claude | 3–5 calls / run |
 | Gene-set classifier | Local LM Studio | candidate set scoring |
 | Analyst splitter | Claude | 1 call / run when starter entities exist |
@@ -235,7 +245,7 @@
 Common event groups:
 
 - Formalizer: `hypothesis_extracted`, `confirmation_required`, `confirmation_received`, `claims_formalized`
-- Librarian: `queries_expanded`, `papers_retrieved`, `paper_classified`, `classifier_degraded`, `synthesis_ready`
+- Librarian: `queries_expanded`, `papers_retrieved`, `paper_classified`, `hunt_round`, `classifier_degraded`, `synthesis_ready`
 - Analyst: `gene_sets_expanded`, `analyst_started`, `ensembl.batch_progress`, `analyst_gene_fetched`, `analyst_symbol_resolved`
 - Genomic enrichments: `analyst_gnomad_fetched`, `analyst_phylo_loaded`, `paml.*`, `analyst_paml_complete`, `rdnds.*`, `analyst_rdnds_complete`
 - Compute: `methodologist_plan_complete`, `compute_start`, `compute_test_complete`, `compute_all_complete`, `compute_robustness_start`, `compute_robustness_complete`
