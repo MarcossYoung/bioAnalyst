@@ -698,7 +698,7 @@ def _fetch_all_gene_data(
         return _full(g) if g.upper() in starters else _light(g)
 
     out = {}
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=40) as ex:
         for g, data in ex.map(_dispatch, genes):
             out[g] = data
     return out

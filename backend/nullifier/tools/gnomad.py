@@ -28,8 +28,8 @@ _GQL = """
 query GeneConstraint($geneId: String!, $referenceGenome: ReferenceGenomeId!) {
   gene(gene_id: $geneId, reference_genome: $referenceGenome) {
     gnomad_constraint {
-      loeuf
-      pLI
+      oe_lof_upper
+      pli
       syn_z
       mis_z
       obs_lof
@@ -121,8 +121,8 @@ def fetch_constraint(ensg_id: str, genome: str = "GRCh38") -> dict | None:
             return None
 
         result = {
-            "loeuf":    c.get("loeuf"),
-            "pli":      c.get("pLI"),
+            "loeuf":    c.get("oe_lof_upper"),
+            "pli":      c.get("pli"),
             "syn_z":    c.get("syn_z"),
             "mis_z":    c.get("mis_z"),
             "obs_lof":  c.get("obs_lof"),
