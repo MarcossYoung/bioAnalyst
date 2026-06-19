@@ -23,6 +23,7 @@ formalizer_stage2     = "claude"   # Decompose into atomic claims
 query_expander        = "claude"   # Domain-aware query generation
 librarian_per_paper   = "local"    # High-volume structured classification
 librarian_synthesizer = "claude"   # Cross-paper reasoning per claim
+librarian_hunter      = "claude"   # Falsification-targeted follow-up queries
 analyst               = "claude"   # (legacy v5 path; v6 uses methodologist+interpreter)
 methodologist         = "claude"   # v6: picks tests from compute.py's library
 interpreter           = "claude"   # v6: reads typed compute results
@@ -83,6 +84,16 @@ max_papers_per_claim = 12
 max_per_source = 3
 parallel_search = true
 per_claim_search_budget_seconds = 30
+hunt_max_rounds = 3
+hunt_min_rounds = 2
+hunt_patience = 1
+hunt_target_contradicting = 2
+hunt_target_sources = 2
+semantic_scholar_fields_of_study = "Biology,Medicine"
+semantic_scholar_min_citations = 0
+use_snippet_search = false
+snippet_search_query_limit = 2
+snippet_search_result_limit = 10
 
 [flags]
 db_path = "~/.nullifier/flags.db"

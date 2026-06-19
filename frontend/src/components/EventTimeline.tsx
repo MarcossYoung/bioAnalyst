@@ -10,7 +10,7 @@ const STAGE_KEY: Record<string, string> = {
   hypothesis_extracted: 'formalizer', confirmation_required: 'formalizer',
   confirmation_received: 'formalizer', formalizer_detected_completed_analysis: 'formalizer',
   claims_formalized: 'formalizer',
-  queries_expanded: 'librarian', papers_retrieved: 'librarian',
+  queries_expanded: 'librarian', papers_retrieved: 'librarian', hunt_round: 'librarian',
   paper_classified: 'librarian', synthesis_ready: 'librarian',
   classifier_degraded: 'librarian',
   analyst_started: 'analyst', analyst_comparability_screen: 'analyst',
@@ -77,6 +77,7 @@ function eventLabel(ev: WsEvent): string {
     case 'claims_formalized':     return `${p.claim_count} claim(s) identified`
     case 'queries_expanded':      return `[${p.claim_id}] queries expanded`
     case 'papers_retrieved':      return `[${p.claim_id}] ${p.paper_count} papers`
+    case 'hunt_round':            return `[${p.claim_id}] hunt ${Number(p.round_index) + 1}: ${p.new_paper_count} new, ${p.contradicting_count} disconfirming`
     case 'paper_classified':      return `  ${p.classification} — ${String(p.paper_title ?? '').slice(0, 48)}`
     case 'synthesis_ready':       return `[${p.claim_id}] ${p.evidence_strength}`
     case 'classifier_degraded':   return `[${p.claim_id}] classifier degraded (${p.dropped}/${p.retrieved} dropped)`

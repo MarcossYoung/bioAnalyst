@@ -131,6 +131,20 @@ def papers_retrieved(claim_id: str, paper_count: int) -> Event:
     return Event("papers_retrieved", {"claim_id": claim_id, "paper_count": paper_count})
 
 
+def hunt_round(
+    claim_id: str,
+    round_index: int,
+    contradicting_count: int,
+    new_paper_count: int,
+) -> Event:
+    return Event("hunt_round", {
+        "claim_id": claim_id,
+        "round_index": round_index,
+        "contradicting_count": contradicting_count,
+        "new_paper_count": new_paper_count,
+    })
+
+
 def paper_classified(claim_id: str, paper_title: str, classification: str) -> Event:
     return Event("paper_classified", {
         "claim_id": claim_id,

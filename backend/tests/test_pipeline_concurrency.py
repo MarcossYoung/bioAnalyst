@@ -18,7 +18,7 @@ def test_librarian_honors_configured_per_claim_budget(monkeypatch):
         ],
     }
     paper = {"source": "src", "id": "1", "title": "Title 1", "abstract": "Abstract.", "year": 2024}
-    monotonic_values = iter([100.0, 101.0])
+    monotonic_values = iter([100.0, 101.0, 101.0])
 
     monkeypatch.setattr(
         librarian,

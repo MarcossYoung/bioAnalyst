@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, wait as _cf_wait
 
 import requests
 
-from .sources import semantic_scholar, openalex, europe_pmc, biorxiv
+from .sources import semantic_scholar, semantic_scholar_snippets, openalex, europe_pmc, biorxiv
 
 SOURCES = {
     "semantic_scholar": semantic_scholar.search,
@@ -177,6 +177,11 @@ def _paper_score(p: dict) -> float:
         score += min(p["citation_count"] / 10, 20)
     if p.get("influential_citation_count"):
         score += min(p["influential_citation_count"], 10)
+    if p.get("tldr"):
+        score += 2
+    fields = {str(field).lower() for field in (p.get("fields_of_study") or [])}
+    if fields & {"biology", "medicine"}:
+        score += 2
     score += {"semantic_scholar": 3, "openalex": 2, "europe_pmc": 1, "biorxiv": 0}.get(p["source"], 0)
     return score
 
@@ -206,5 +211,37 @@ def citation_similarity(query: str, paper: dict | None) -> float:
 
 def find_by_title(title_fragment: str, health: "SourceHealth | None" = None) -> dict | None:
     """Look up a specific paper the user cited by title fragment."""
+    if not health or not health.is_open("semantic_scholar"):
+        try:
+            matched = semantic_scholar.match_by_title(title_fragment[:200])
+            if health:
+                health.record_ok("semantic_scholar")
+            if matched:
+                return matched
+        except Exception as exc:
+            if health:
+                health.record_fail("semantic_scholar", exc)
     results, _ = federated_search(title_fragment[:200], max_per_source=3, health=health)
     return results[0] if results else None
+
+
+def find_snippets(
+    query: str,
+    limit: int = 10,
+    health: "SourceHealth | None" = None,
+    timeout_seconds: float | None = None,
+) -> tuple[list[dict], str]:
+    """Search Semantic Scholar passages without bypassing the shared host breaker."""
+    if health and health.is_open("semantic_scholar"):
+        return [], "disabled (Semantic Scholar host unresponsive)"
+    try:
+        snippets = semantic_scholar_snippets.search_snippets(
+            query, limit=limit, timeout_seconds=timeout_seconds
+        )
+        if health:
+            health.record_ok("semantic_scholar")
+        return snippets, f"ok ({len(snippets)} results)"
+    except Exception as exc:
+        if health:
+            health.record_fail("semantic_scholar", exc)
+        return [], f"failed: {type(exc).__name__}"
