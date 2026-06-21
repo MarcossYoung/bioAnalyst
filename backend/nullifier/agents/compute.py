@@ -27,8 +27,18 @@ def run_compute(
             on_event(e)
 
     requested = plan.get("tests_requested") or []
+    untested = not requested and not plan.get("untestable")
+    if untested:
+        _emit(ev.no_applicable_tests(plan.get("claim_constructs") or []))
     _emit(ev.compute_start(len(requested)))
     compute_results = run_analysis_plan(plan, data)
+    if untested:
+        compute_results = {
+            **compute_results,
+            "untested": True,
+            "untested_reason": "No applicable deterministic test was selected for the claim constructs.",
+            "claim_constructs": list(plan.get("claim_constructs") or []),
+        }
     for t in compute_results.get("tests") or []:
         name = t.get("test") or t.get("requested", "?")
         sig = t.get("significant_adjusted")

@@ -100,6 +100,19 @@ def _deterministic_plan_for_constructs(claim_constructs: set[str], expansion: di
     primary_tests = []
     rationale_bits = []
 
+    paml_routes = {
+        "pervasive_positive_selection": ("paml_site_model", {}),
+        "lineage_specific_positive_selection": ("paml_branch_site_model", {"foreground": "primates"}),
+        "lineage_specific_rate_shift": ("paml_branch_model", {"foreground": "primates"}),
+    }
+    for construct, (test, inputs) in paml_routes.items():
+        if construct in claim_constructs:
+            entry = {"test": test, "inputs": inputs,
+                     "rationale": f"The {construct} construct maps directly to {test}."}
+            tests_requested.append(entry)
+            primary_tests.append({"test": test, "inputs": inputs})
+            rationale_bits.append(entry["rationale"])
+
     if "cross_lineage_rate_correlation" in claim_constructs:
         erc_inputs = {
             "set_a": "starter",
@@ -217,7 +230,7 @@ def _build_user_prompt(
             "ortholog_count, paralog_count, duplication_count, regulatory_feature_count. "
             "For coordinated-rate hypotheses, prefer spearman/pearson over variable dnds and another aligned variable when n permits. "
             "PAML metrics when available: omega_foreground, omega_background, acceleration_ratio. "
-            "For lineage-specific hypotheses, request paml_branch_model and compare omega_foreground or acceleration_ratio across sets. "
+            "Use paml_branch_model only for branch-wide rate shifts; use paml_site_model for pervasive site selection and paml_branch_site_model for foreground site selection. "
             "gnomAD constraint (None when unavailable): "
             "loeuf (LOEUF score — lower = more constrained, intolerant to LoF); "
             "pli (pLI — probability of LoF intolerance, 0–1). "

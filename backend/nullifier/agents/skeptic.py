@@ -1,6 +1,9 @@
+from typing import Callable
+
 from ..tools.llm_client import llm_call_json
 from ..tools.diagnostics import fp_risk_settings
 from ..tools.phenotypes import ASSOCIATION_ONLY_GUARD
+from .contracts import validate_verdict
 from .semantic import (
     AgentSpec,
     OutputContract,
@@ -65,6 +68,9 @@ Use NOVEL-UNTESTED when novelty_flag is unstudied across claims.
 If classifier_degraded is true, do not treat empty classifications as a confirmed literature void.
 If no genomic test ran or genomic evidence is marked untestable, report genomic_evidence_alignment as N/A; do not score it.
 If RERconverge is present, treat it as secondary association evidence only; it cannot override ERC/mirrortree-lite and must not be framed as causal co-evolution.
+PAML branch models indicate lineage-wide rate shifts and must not stand in for site or branch-site positive-selection tests.
+Accept site or branch-site positive-selection evidence only when both the gene-family BH-adjusted LRT and a BEB site with posterior >=0.95 support it.
+Treat alignment error as the dominant false-positive concern when BEB support is sparse, low-posterior, or alignment-sensitive.
 Propose the single most decisive experiment or analysis."""
 
 SKEPTIC_DNDS_LIMITATION = (
@@ -106,7 +112,12 @@ If the completed analysis has high-severity methodological or statistical proble
 """
 
 
-def stress_test(formalized: dict, evidence: dict, analyst_result: dict | None = None) -> dict:
+def stress_test(
+    formalized: dict,
+    evidence: dict,
+    analyst_result: dict | None = None,
+    on_contract_violation: Callable[[list[str]], None] | None = None,
+) -> dict:
     claims_and_evidence = []
     for idx, raw_claim in enumerate(formalized.get("atomic_claims", []) or []):
         claim = normalize_atomic_claim(raw_claim, idx)
@@ -172,6 +183,9 @@ CLAIMS + EVIDENCE + TOP ABSTRACTS:
 {chr(10).join(claims_and_evidence)}
 {analyst_section}{critique_section}"""
     verdict = llm_call_json("skeptic", system, user_msg, max_tokens=3500)
+    raw_violations = validate_verdict(verdict)
+    if raw_violations and on_contract_violation is not None:
+        on_contract_violation(raw_violations)
     return _apply_guardrails(verdict, evidence, analyst_result)
 
 
@@ -193,7 +207,8 @@ def _apply_guardrails_with_config(
     if not isinstance(verdict, dict):
         return verdict
     out = dict(verdict)
-    scores = dict(out.get("scores") or {})
+    raw_scores = out.get("scores")
+    scores = dict(raw_scores) if isinstance(raw_scores, dict) else {}
     analyst_compute = (analyst_result or {}).get("compute_results") or {}
     analyst_interp = (analyst_result or {}).get("interpretation") or {}
     tests = analyst_compute.get("tests") or []
@@ -213,6 +228,7 @@ def _apply_guardrails_with_config(
     genomic_not_scored = (
         not genomic_test_ran
         or not analyst_result
+        or analyst_compute.get("untested")
         or analyst_compute.get("untestable")
         or analyst_interp.get("overall_genomic_assessment") == "untestable"
         or dnds_saturation.get("flag")
@@ -296,6 +312,19 @@ def _format_analyst_for_skeptic(analyst_result: dict | None) -> str:
         return "\nGENOMIC EVIDENCE: Not available - report genomic_evidence_alignment as N/A; do not score."
 
     interp = analyst_result.get("interpretation", {})
+    compute_results = analyst_result.get("compute_results") or {}
+    if compute_results.get("untested") or interp.get("overall_genomic_assessment") == "untested":
+        reason = (
+            interp.get("assessment_justification")
+            or compute_results.get("untested_reason")
+            or "No applicable deterministic genomic test was selected."
+        )
+        return (
+            "\nGENOMIC EVIDENCE: Untested - no applicable test ran; this is not a null result. "
+            "Report genomic_evidence_alignment as N/A; do not score.\n"
+            f"  Claim constructs: {compute_results.get('claim_constructs', [])}\n"
+            f"  Reason: {reason}"
+        )
     if (
         interp.get("overall_genomic_assessment") == "untestable"
         or (analyst_result.get("compute_results") or {}).get("untestable")

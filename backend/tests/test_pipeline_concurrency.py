@@ -193,7 +193,7 @@ def test_run_pipeline_overlaps_librarian_with_analyst(monkeypatch):
     monkeypatch.setattr(
         pipeline,
         "stress_test",
-        lambda formalized, evidence, analyst_result=None: {"scores": {"overall_falsifiability_score": 5}, "verdict": "ok"},
+        lambda formalized, evidence, analyst_result=None, **kwargs: {"scores": {"overall_falsifiability_score": 5}, "verdict": "ok"},
     )
 
     events = list(pipeline.run_pipeline("raw input"))

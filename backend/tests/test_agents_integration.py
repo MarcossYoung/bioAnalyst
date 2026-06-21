@@ -1,5 +1,7 @@
 """Smoke tests for agent/data handoff guards."""
 
+import pytest
+
 from nullifier.agents import analyst, formalizer, interpreter, librarian, methodologist, skeptic
 from nullifier.agents.analyst import _filter_expansion_to_targets, _screen_comparable, _set_statistics, _set_usability
 from nullifier.agents.semantic import normalize_atomic_claim
@@ -126,6 +128,30 @@ def test_formalizer_stage2_infers_cross_lineage_construct(monkeypatch):
     out = formalizer.formalize_stage2({"core_hypothesis": "co-evolution"})
 
     assert out["atomic_claims"][0]["construct"] == "cross_lineage_rate_correlation"
+
+
+@pytest.mark.parametrize(("statement", "expected"), [
+    ("These genes contain positively selected codons across mammals.", "pervasive_positive_selection"),
+    ("These genes underwent positive selection on the primate lineage.", "lineage_specific_positive_selection"),
+    ("These genes show accelerated rates from relaxed constraint in primates.", "lineage_specific_rate_shift"),
+])
+def test_formalizer_infers_explicit_paml_constructs(statement, expected):
+    assert formalizer._infer_claim_construct({"statement": statement}) == expected
+
+
+@pytest.mark.parametrize(("construct", "test"), [
+    ("pervasive_positive_selection", "paml_site_model"),
+    ("lineage_specific_positive_selection", "paml_branch_site_model"),
+    ("lineage_specific_rate_shift", "paml_branch_model"),
+])
+def test_methodologist_routes_paml_constructs_deterministically(construct, test):
+    plan = methodologist.run_methodologist(
+        {"atomic_claims": [{"id": "c1", "construct": construct}]},
+        {"starter": ["A"], "expanded": {}, "controls": {}},
+        {},
+    )
+    assert [entry["test"] for entry in plan["tests_requested"]] == [test]
+    assert plan["correction"] == "none"
 
 
 def test_llm_json_parser_accepts_wrapped_json():
@@ -481,17 +507,62 @@ def test_interpreter_adds_rerconverge_association_guard(monkeypatch):
 
 def test_interpreter_invalid_root_type_returns_inconclusive_fallback(monkeypatch):
     monkeypatch.setattr(interpreter, "llm_call_json", lambda *args, **kwargs: [])
+    violations = []
 
     out = interpreter.run_interpreter(
         {"core_hypothesis": "h", "atomic_claims": []},
         {"starter": []},
         {"tests": [], "corrections_applied": [], "data_summary": {}},
         {},
+        on_contract_violation=violations.extend,
     )
 
     assert out["overall_genomic_assessment"] == "inconclusive"
     assert out["patterns_observed"] == []
     assert "invalid root type (list)" in out["limitations"][0]
+    assert violations == ["expected object, got list"]
+
+
+def test_interpreter_reports_raw_field_violation_before_normalizing(monkeypatch):
+    payload = {
+        "patterns_observed": [],
+        "outlier_genes": [],
+        "regulatory_overlap": {},
+        "limitations": "none",
+        "overall_genomic_assessment": "inconclusive",
+        "assessment_justification": "No directional evidence was available.",
+    }
+    monkeypatch.setattr(interpreter, "llm_call_json", lambda *args, **kwargs: payload)
+    violations = []
+
+    out = interpreter.run_interpreter(
+        {"core_hypothesis": "h", "atomic_claims": []},
+        {"starter": []},
+        {"tests": [], "corrections_applied": [], "data_summary": {}},
+        {},
+        on_contract_violation=violations.extend,
+    )
+
+    assert violations == ["limitations must be a list"]
+    assert out["limitations"] != list("none")
+
+
+def test_skeptic_reports_malformed_raw_scores_without_raising(monkeypatch):
+    monkeypatch.setattr(
+        skeptic,
+        "llm_call_json",
+        lambda *args, **kwargs: {"verdict": "WEAK", "scores": []},
+    )
+    violations = []
+
+    out = skeptic.stress_test(
+        {"core_hypothesis": "h", "atomic_claims": [], "starter_entities": []},
+        {"claim_evidence": {}, "cited_literature_validated": []},
+        on_contract_violation=violations.extend,
+    )
+
+    assert "scores must be an object" in violations
+    assert out["scores"]["genomic_evidence_alignment"] is None
 
 
 def test_gnomad_fetch_uses_nested_ensembl_ids(monkeypatch):

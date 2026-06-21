@@ -20,12 +20,13 @@ const STAGE_KEY: Record<string, string> = {
   analyst_gnomad_fetched: 'analyst', analyst_paml_complete: 'analyst',
   analyst_rdnds_complete: 'analyst',
   'paml.gene_started': 'analyst', 'paml.gene_complete': 'analyst',
-  'paml.gene_timeout': 'analyst', 'rdnds.gene_started': 'analyst',
+  'paml.gene_timeout': 'analyst', 'paml.gene_failed': 'analyst', 'rdnds.gene_started': 'analyst',
   'rdnds.gene_complete': 'analyst', 'ensembl.batch_progress': 'analyst',
-  analyst_ready: 'analyst', analyst_skipped: 'analyst',
+  analyst_ready: 'analyst', analyst_skipped: 'analyst', analyst_failed: 'analyst',
   analyst_reproducibility_check_start: 'analyst', analyst_reproducibility_check_complete: 'analyst',
   gene_sets_expanded: 'methodologist', methodologist_plan_complete: 'methodologist',
   compute_start: 'compute', compute_test_complete: 'compute', compute_all_complete: 'compute',
+  no_applicable_tests: 'compute',
   compute_robustness_start: 'robustness', compute_robustness_complete: 'robustness',
   interpreter_start: 'interpreter', interpreter_complete: 'interpreter',
   skeptic_critique_mode_active: 'skeptic', verdict_ready: 'skeptic',
@@ -51,7 +52,7 @@ const STAGE_COLOR: Record<string, string> = {
 const STAGE_TERMINALS: Record<string, string[]> = {
   formalizer: ['claims_formalized'],
   librarian: ['synthesis_ready'],
-  analyst: ['analyst_ready', 'analyst_skipped'],
+  analyst: ['analyst_ready', 'analyst_skipped', 'analyst_failed'],
   methodologist: ['methodologist_plan_complete'],
   compute: ['compute_all_complete'],
   robustness: ['compute_robustness_complete'],
@@ -68,6 +69,7 @@ function isDone(stage: string, eventTypes: Set<string>): boolean {
 
 function eventLabel(ev: WsEvent): string {
   const p = ev.payload as Record<string, unknown>
+  const pamlModel = p.model === 'branch_site' ? 'branch-site' : String(p.model ?? 'branch')
   switch (ev.type) {
     case 'run_started':           return 'run started'
     case 'stage_started':         return String(p.label ?? p.stage)
@@ -89,14 +91,16 @@ function eventLabel(ev: WsEvent): string {
     case 'analyst_started':       return `analyst: ${p.gene_count} gene(s)`
     case 'analyst_gene_fetched':  return `  ${p.gene} — ${p.status}`
     case 'ensembl.batch_progress': return `Ensembl batch: ${p.fetched} / ${p.total}`
-    case 'paml.gene_started':     return `PAML: ${p.gene} (${p.foreground})`
-    case 'paml.gene_complete':    return `PAML: ${p.gene} ω=${typeof p.omega_foreground === 'number' ? p.omega_foreground.toFixed(3) : 'n/a'}`
-    case 'paml.gene_timeout':     return `PAML timeout: ${p.gene}`
+    case 'paml.gene_started':     return `PAML ${pamlModel}: ${p.gene}${p.foreground ? ` (${p.foreground})` : ''}`
+    case 'paml.gene_complete':    return `PAML ${pamlModel}: ${p.gene}, p=${typeof p.lrt_pvalue === 'number' ? p.lrt_pvalue.toFixed(4) : 'n/a'}`
+    case 'paml.gene_timeout':     return `PAML ${pamlModel} timeout: ${p.gene}`
+    case 'paml.gene_failed':      return `PAML ${pamlModel} failed: ${p.gene} (${p.status})`
     case 'rdnds.gene_started':    return `R dN/dS: ${p.gene}`
     case 'rdnds.gene_complete':   return `R dN/dS: ${p.gene} (${p.species_count} species)`
     case 'analyst_rdnds_complete': return `R dN/dS: ${p.genes_with_dnds}/${p.total} genes, ${p.orthologs_attached} orthologs`
     case 'analyst_ready':         return `genomic: ${p.overall_genomic_assessment}`
     case 'analyst_skipped':       return `analyst skipped (${p.reason})`
+    case 'analyst_failed':        return `analyst failed; continuing without genomic panel (${p.reason})`
     case 'gene_sets_expanded':    return `gene sets: ${p.total_expanded} expanded, ${p.total_controls} controls`
     case 'methodologist_plan_complete': return `methodologist: ${p.test_count} tests (${p.correction})`
     case 'compute_start':         return `computing ${p.test_count} statistical tests…`
@@ -104,11 +108,13 @@ function eventLabel(ev: WsEvent): string {
       const pv = typeof p.p_value === 'number' ? p.p_value.toFixed(4) : '?'
       return `  ${p.test}: p=${pv} (${p.significant ? 'sig' : 'ns'})`
     }
+    case 'no_applicable_tests':   return `untested: no applicable test for ${Array.isArray(p.constructs) ? p.constructs.join(', ') || 'claim constructs' : 'claim constructs'}`
     case 'compute_all_complete':  return `compute done: ${p.test_count} tests`
     case 'compute_robustness_start': return `robustness: ${p.n_perturbations} perturbations`
     case 'compute_robustness_complete': return `robustness: ${p.stability} (${Math.round(Number(p.agreement_fraction) * 100)}%)`
     case 'interpreter_start':     return `interpreter reading results…`
     case 'interpreter_complete':  return `interpreter: ${p.overall_assessment}`
+    case 'contract_violation':    return `${p.agent} output contract warning: ${Array.isArray(p.violations) ? p.violations.join('; ') : 'invalid output'}`
     case 'verdict_ready':         return `verdict: ${p.verdict}`
     case 'token_update':          return `cost: $${Number(p.cost_estimate).toFixed(4)}`
     case 'run_completed':         return 'run completed'
@@ -123,8 +129,8 @@ function rowColor(type: string): string {
   if (type === 'run_aborted')   return '#94a3b8'
   if (type === 'run_completed') return '#86efac'
   if (type === 'verdict_ready') return '#fcd34d'
+  if (type === 'classifier_degraded' || type === 'analyst_failed' || type === 'contract_violation' || type === 'no_applicable_tests') return '#fca5a5'
   if (type.includes('analyst') || type.startsWith('paml.') || type.startsWith('rdnds.') || type === 'ensembl.batch_progress') return '#67e8f9'
-  if (type === 'classifier_degraded') return '#fca5a5'
   if (type === 'paper_classified' || type === 'analyst_gene_fetched' || type === 'compute_test_complete') return '#475569'
   if (type.startsWith('compute_') || type === 'gene_sets_expanded' || type === 'methodologist_plan_complete') return '#a5b4fc'
   if (type.startsWith('interpreter')) return '#67e8f9'
@@ -141,7 +147,9 @@ export function EventTimeline({ events }: EventTimelineProps) {
   // Group events by stage
   const groups = new Map<string, WsEvent[]>()
   for (const ev of events) {
-    const stage = STAGE_KEY[ev.type] ?? 'meta'
+    const payload = ev.payload as Record<string, unknown>
+    const contractStage = ev.type === 'contract_violation' ? String(payload.agent ?? '') : ''
+    const stage = STAGE_ORDER.includes(contractStage) ? contractStage : (STAGE_KEY[ev.type] ?? 'meta')
     if (!groups.has(stage)) groups.set(stage, [])
     groups.get(stage)!.push(ev)
   }

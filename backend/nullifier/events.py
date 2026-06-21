@@ -229,30 +229,34 @@ def diagnostics_risk_survival_summary(set_name: str, summary: dict) -> Event:
     })
 
 
-def paml_gene_started(gene: str, foreground: str) -> Event:
-    return Event("paml.gene_started", {"gene": gene, "foreground": foreground})
+def paml_gene_started(gene: str, foreground: str | None = None, model: str = "branch") -> Event:
+    return Event("paml.gene_started", {"gene": gene, "model": model, **({"foreground": foreground} if foreground else {})})
 
 
-def paml_gene_complete(gene: str, omega_foreground, omega_background, lrt_pvalue) -> Event:
+def paml_gene_complete(gene: str, omega_foreground=None, omega_background=None, lrt_pvalue=None,
+                       model: str = "branch", foreground: str | None = None) -> Event:
     return Event("paml.gene_complete", {
-        "gene": gene,
+        "gene": gene, "model": model,
         "omega_foreground": omega_foreground,
         "omega_background": omega_background,
         "lrt_pvalue": lrt_pvalue,
+        **({"foreground": foreground} if foreground else {}),
     })
 
 
-def paml_gene_timeout(gene: str) -> Event:
-    return Event("paml.gene_timeout", {"gene": gene})
+def paml_gene_timeout(gene: str, model: str = "branch", foreground: str | None = None) -> Event:
+    return Event("paml.gene_timeout", {"gene": gene, "model": model, **({"foreground": foreground} if foreground else {})})
 
 
 def paml_gene_failed(gene: str, status: str, note: str,
-                     diagnostics: dict | None = None) -> Event:
+                     diagnostics: dict | None = None, model: str = "branch",
+                     foreground: str | None = None) -> Event:
     return Event("paml.gene_failed", {
-        "gene": gene,
+        "gene": gene, "model": model,
         "status": status,
         "note": note,
         **(diagnostics or {}),
+        **({"foreground": foreground} if foreground else {}),
     })
 
 
@@ -274,6 +278,17 @@ def analyst_ready(assessment: str) -> Event:
 
 def analyst_skipped(reason: str) -> Event:
     return Event("analyst_skipped", {"reason": reason})
+
+
+def analyst_failed(reason: str) -> Event:
+    return Event("analyst_failed", {"reason": reason})
+
+
+def contract_violation(agent: str, violations: list[str]) -> Event:
+    return Event("contract_violation", {
+        "agent": agent,
+        "violations": list(violations),
+    })
 
 
 def analyst_reproducibility_check_start(finding_count: int) -> Event:
@@ -409,6 +424,10 @@ def methodologist_plan_complete(plan: dict) -> Event:
         "primary_test_count": len(plan.get("primary_tests") or []),
         "rationale": plan.get("rationale"),
     })
+
+
+def no_applicable_tests(constructs: list[str]) -> Event:
+    return Event("no_applicable_tests", {"constructs": list(constructs)})
 
 
 def compute_start(test_count: int) -> Event:

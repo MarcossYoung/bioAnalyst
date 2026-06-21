@@ -70,9 +70,15 @@ def _fetch_paml_data(
     on_event=None,
 ) -> dict:
     from ..tools import paml
-    results = {}
+    config = load_config().get("paml", {})
+    maps = {"paml_data": {}, "paml_site_data": {}, "paml_branch_site_data": {}}
+    models = [("branch", "paml_data", paml.run_branch_model, True)]
+    if config.get("run_site_model", True):
+        models.append(("site", "paml_site_data", paml.run_site_model, False))
+    if config.get("run_branch_site_model", True):
+        models.append(("branch_site", "paml_branch_site_data", paml.run_branch_site_model, True))
 
-    def _emit_failure(sym: str, result: dict) -> None:
+    def _emit_failure(sym: str, result: dict, model: str, needs_foreground: bool) -> None:
         logger.warning("PAML failed for %s: %s", sym, result)
         if on_event:
             on_event(ev.paml_gene_failed(
@@ -84,46 +90,37 @@ def _fetch_paml_data(
                     for key in ("phase", "returncode", "stderr", "stdout")
                     if result.get(key) is not None
                 },
+                model=model,
+                foreground=foreground if needs_foreground else None,
             ))
 
     for sym in starter_genes:
-        if on_event:
-            on_event(ev.paml_gene_started(sym, foreground))
         d = gene_data.get(sym, {})
-        if "_error" in d:
-            results[sym] = {"status": "error", "note": d["_error"]}
-            _emit_failure(sym, results[sym])
-            continue
         ensg = (d.get("info") or {}).get("ensembl_id")
-        if not ensg:
-            results[sym] = {"status": "error", "note": "no ensembl_id"}
-            _emit_failure(sym, results[sym])
-            continue
-        aligned = ensembl.fetch_gene_tree_aligned(ensg, use_cache=use_cache)
-        if not aligned:
-            results[sym] = {
-                "status": "no_compara_alignment",
-                "gene": sym,
-                "note": "no Ensembl Compara alignment available",
-            }
-            _emit_failure(sym, results[sym])
-            continue
-        results[sym] = paml.run_branch_model(
-            ensg, sym, aligned, foreground=foreground, use_cache=use_cache
-        )
-        result = results[sym]
-        if on_event and result.get("status") == "timeout":
-            on_event(ev.paml_gene_timeout(sym))
-        elif on_event and result.get("status") == "computed":
-            on_event(ev.paml_gene_complete(
-                sym,
-                result.get("omega_foreground"),
-                result.get("omega_background"),
-                result.get("lrt_pvalue"),
-            ))
-        elif result.get("status") != "computed":
-            _emit_failure(sym, result)
-    return results
+        aligned = ensembl.fetch_gene_tree_aligned(ensg, use_cache=use_cache) if ensg else None
+        for model, map_name, runner, needs_foreground in models:
+            if on_event:
+                on_event(ev.paml_gene_started(sym, foreground if needs_foreground else None, model))
+            if "_error" in d or not ensg or not aligned:
+                status = "no_compara_alignment" if ensg and not aligned else "error"
+                note = d.get("_error") or ("no Ensembl Compara alignment available" if ensg else "no ensembl_id")
+                result = {"status": status, "gene": sym, "model": model, "note": note}
+            else:
+                kwargs = {"use_cache": use_cache}
+                if needs_foreground:
+                    kwargs["foreground"] = foreground
+                result = runner(ensg, sym, aligned, **kwargs)
+            maps[map_name][sym] = result
+            if on_event and result.get("status") == "timeout":
+                on_event(ev.paml_gene_timeout(sym, model, foreground if needs_foreground else None))
+            elif on_event and result.get("status") == "computed":
+                on_event(ev.paml_gene_complete(sym, result.get("omega_foreground"), result.get("omega_background"),
+                                                result.get("lrt_pvalue"), model, foreground if needs_foreground else None))
+            elif result.get("status") != "computed" and (
+                model == "branch" or result.get("status") in {"timeout", "codeml_unavailable"} or result.get("phase")
+            ):
+                _emit_failure(sym, result, model, needs_foreground)
+    return maps
 
 
 def _fetch_rdnds_data(
@@ -524,7 +521,10 @@ def run_analyst(
         len(gene_data),
     ))
 
-    paml_data = _fetch_paml_data(gene_data, list(starter_entities), use_cache=use_cache, on_event=_emit)
+    paml_maps = _fetch_paml_data(gene_data, list(starter_entities), use_cache=use_cache, on_event=_emit)
+    paml_data = paml_maps["paml_data"]
+    paml_site_data = paml_maps["paml_site_data"]
+    paml_branch_site_data = paml_maps["paml_branch_site_data"]
     _emit(ev.analyst_paml_complete(
         sum(1 for v in paml_data.values() if v.get("status") == "computed"),
         len(starter_entities),
@@ -551,6 +551,9 @@ def run_analyst(
         diagnostics=diagnostics,
         min_low_risk_genes=min_low_risk_genes,
     )
+    data["paml"] = paml_data
+    data["paml_site"] = paml_site_data
+    data["paml_branch_site"] = paml_branch_site_data
     if "phenotype_association" in _claim_constructs(formalized):
         phenotype_axis = (data.get("phenotypes") or {}).get("cortical_neurons") or {}
         rerconverge_data = run_rerconverge(
@@ -606,6 +609,8 @@ def run_analyst(
         "gnomad_data": gnomad_data,
         "phylo_data": phylo_data,
         "paml_data": paml_data,
+        "paml_site_data": paml_site_data,
+        "paml_branch_site_data": paml_branch_site_data,
         "rdnds_data": rdnds_data,
         "diagnostics": diagnostics,
         "risk_filter": risk_filter,

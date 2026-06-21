@@ -4,7 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 
-ALLOWED_CLAIM_CONSTRUCTS = {"set_difference", "cross_lineage_rate_correlation", "phenotype_association"}
+ALLOWED_CLAIM_CONSTRUCTS = {
+    "set_difference", "cross_lineage_rate_correlation", "phenotype_association",
+    "pervasive_positive_selection", "lineage_specific_positive_selection",
+    "lineage_specific_rate_shift",
+}
+_CONSTRUCT_ALIASES = {"lineage_specific_selection": "lineage_specific_rate_shift"}
 
 
 def _bullets(items: Sequence[str]) -> str:
@@ -69,7 +74,7 @@ def normalize_atomic_claim(claim: Any, index: int | None = None) -> dict[str, An
             entities = []
         context = claim.get("context", "")
         mechanism = claim.get("mechanism", "")
-        construct = str(claim.get("construct") or "").strip()
+        construct = _CONSTRUCT_ALIASES.get(str(claim.get("construct") or "").strip(), str(claim.get("construct") or "").strip())
         if construct not in ALLOWED_CLAIM_CONSTRUCTS:
             construct = "set_difference"
         return {

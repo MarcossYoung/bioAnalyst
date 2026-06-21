@@ -75,8 +75,11 @@ pairwise_dnds_fallback = false
 required_packages = ["ape", "phangorn", "seqinr", "caper"]
 
 [paml]
-# Secondary branch-model omega path only; pairwise dN/dS does not require codeml.
+# CODEML model families; pairwise dN/dS does not require codeml.
 codeml_path = ""  # auto-detect from PATH if empty; set manually if codeml is elsewhere
+run_site_model = true
+run_branch_site_model = true
+timeout_seconds = 300
 
 [literature]
 max_papers_per_claim = 12

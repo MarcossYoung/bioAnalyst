@@ -1,8 +1,10 @@
 from statistics import mean
+from typing import Callable
 
 from ..tools.llm_client import llm_call_json
 from ..tools.diagnostics import fp_risk_settings
 from ..tools.phenotypes import ASSOCIATION_ONLY_GUARD
+from .contracts import validate_interpretation
 from .semantic import AgentSpec, OutputContract, OutputField, TaskObject
 
 
@@ -27,6 +29,9 @@ INTERPRETER_SPEC = AgentSpec(
         "If an available computed test has null effect-size or confidence-interval fields, state that the typed result does not provide them instead of inventing them.",
         "Pairwise dN/dS is computed from Ensembl homology protein alignments threaded onto transcript CDS with a conservative NG86 estimator; describe missing values as coverage limitations, not evidence against the hypothesis.",
         "When paml_branch_model or omega metrics are present, interpret omega_foreground, omega_background, acceleration_ratio, and LRT p-values as branch-model PAML results.",
+        "State that positive selection is supported only when the gene-family BH-adjusted LRT is below 0.05 and at least one BEB site has posterior >=0.95.",
+        "Site-class omega above one does not imply gene-wide omega above one; branch-site p-values use the half-chi-square mixture null.",
+        "Treat alignment error and unsuccessful or insufficient alignments as explicit positive-selection coverage limitations.",
         "For PAML limitations, state that genes without sufficient alignment depth or successful codeml runs were excluded.",
         "Regulatory overlap is Jaccard-style and not statistically normalized.",
         "The tool is observational, not a phylogenetic comparative method.",
@@ -58,8 +63,20 @@ def run_interpreter(
     gene_data: dict,
     robustness: dict | None = None,
     reproducibility: dict | None = None,
+    on_contract_violation: Callable[[list[str]], None] | None = None,
 ) -> dict:
     risk_disclaimer = fp_risk_settings()["disclaimer"]
+    if compute_results.get("untested"):
+        reason = compute_results.get("untested_reason") or "No applicable genomic test ran."
+        return {
+            "patterns_observed": [],
+            "outlier_genes": [],
+            "regulatory_overlap": {},
+            "reproducibility_check": [],
+            "limitations": [reason, risk_disclaimer],
+            "overall_genomic_assessment": "untested",
+            "assessment_justification": reason,
+        }
     if compute_results.get("untestable"):
         reason = compute_results.get("untestable_reason") or "No compatible compute method for the claim construct."
         return {
@@ -74,6 +91,9 @@ def run_interpreter(
         }
     user = _build_user_prompt(formalized, expansion, compute_results, gene_data, robustness, reproducibility)
     out = llm_call_json("interpreter", INTERPRETER_SYSTEM, user, max_tokens=3500)
+    raw_violations = validate_interpretation(out)
+    if raw_violations and on_contract_violation is not None:
+        on_contract_violation(raw_violations)
     if not isinstance(out, dict):
         limitations = [
             f"Interpreter returned an invalid root type ({type(out).__name__}); expected a JSON object.",
@@ -91,7 +111,8 @@ def run_interpreter(
             "assessment_justification": "The interpreter response did not satisfy its JSON object contract.",
         }
 
-    limitations = list(out.get("limitations") or [])
+    raw_limitations = out.get("limitations")
+    limitations = list(raw_limitations) if isinstance(raw_limitations, list) else []
     if risk_disclaimer not in limitations:
         limitations.append(risk_disclaimer)
     if _has_rerconverge(compute_results) and ASSOCIATION_ONLY_GUARD not in limitations:
@@ -144,6 +165,21 @@ def _build_user_prompt(
     corr_lines = []
     for c in compute_results.get("corrections_applied") or []:
         corr_lines.append(f"  - {c.get('method')} (n_tests={c.get('n_tests')}, alpha={c.get('alpha')})")
+
+    paml_lines = []
+    for test in tests:
+        if test.get("test") not in {"paml_branch_model", "paml_site_model", "paml_branch_site_model"}:
+            continue
+        details = test.get("details") or {}
+        paml_lines.append(
+            f"  - model={test.get('test')} available={test.get('available')} gene={details.get('best_gene')} "
+            f"raw_p={test.get('p_value')} adjusted_p={test.get('p_value_adjusted')} "
+            f"supported={details.get('positive_selection_supported', test.get('significant_adjusted'))} "
+            f"omega={details.get('omega_positive_class', details.get('omega_foreground_positive', details.get('omega_foreground')))} "
+            f"proportion={details.get('prop_positive', details.get('prop_sites'))} "
+            f"qualifying_BEB={details.get('qualifying_beb_sites', [])[:10]}"
+        )
+    paml_block = "\nPAML MODEL SUMMARY (bounded):\n" + ("\n".join(paml_lines) or "  (none)")
 
     rb_block = ""
     if robustness and robustness.get("applicable"):
@@ -219,11 +255,20 @@ def _build_user_prompt(
         "DETERMINISTIC COMPUTE RESULTS:\n" + ("\n".join(test_lines) or "  (none)"),
         "CORRECTIONS APPLIED:\n" + ("\n".join(corr_lines) or "  (none)"),
     ]
+    if paml_lines:
+        evidence_parts.append(paml_block.strip())
     if compute_results.get("untestable"):
         evidence_parts.append(
             "CONSTRUCT GATE:\n"
             f"  required_construct: {compute_results.get('required_construct')}\n"
             f"  reason: {compute_results.get('untestable_reason')}"
+        )
+    if compute_results.get("untested"):
+        evidence_parts.append(
+            "TEST COVERAGE GATE:\n"
+            "  state: untested\n"
+            f"  claim_constructs: {compute_results.get('claim_constructs', [])}\n"
+            f"  reason: {compute_results.get('untested_reason')}"
         )
     if rb_block.strip():
         evidence_parts.append(rb_block.strip())

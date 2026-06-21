@@ -104,6 +104,14 @@ def _handle_event(event, console) -> None:
         )
     elif t == "analyst_skipped":
         console.print(f"  [dim]Analyst skipped ({p['reason']})[/dim]")
+    elif t == "analyst_failed":
+        console.print(f"  [red]Analyst failed; continuing without genomic evidence: {p['reason']}[/red]")
+    elif t == "no_applicable_tests":
+        constructs = ", ".join(p.get("constructs") or []) or "claim constructs"
+        console.print(f"  [yellow]No applicable genomic test for {constructs}; result is untested, not null.[/yellow]")
+    elif t == "contract_violation":
+        details = "; ".join(p.get("violations") or [])
+        console.print(f"  [yellow]{p.get('agent', 'agent')} output contract warning: {details}[/yellow]")
     elif t == "stage_completed":
         console.print(f"  [dim green]✓ done[/dim green]")
     elif t == "verdict_ready":

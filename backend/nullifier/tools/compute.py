@@ -559,52 +559,111 @@ _CORRECTION_ALIASES = {
 }
 
 
+def _paml_gene_family(data: dict, key: str) -> tuple[dict, list[dict], dict[str, int]]:
+    """Copy a PAML family and apply BH across its finite per-gene LRTs."""
+    source = data.get(key) or {}
+    family = {gene: dict(value) if isinstance(value, dict) else value for gene, value in source.items()}
+    computed = []
+    status_counts: dict[str, int] = {}
+    for result in family.values():
+        if not isinstance(result, dict):
+            continue
+        status = result.get("status") or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        pvalue = result.get("lrt_pvalue")
+        if status == "computed" and isinstance(pvalue, (int, float)) and math.isfinite(float(pvalue)):
+            computed.append(result)
+    if computed:
+        correction = benjamini_hochberg([float(r["lrt_pvalue"]) for r in computed])
+        for result, adjusted, reject in zip(computed, correction["pvals_adjusted"], correction["reject"]):
+            result["p_value_adjusted"] = adjusted
+            result["significant"] = bool(reject)
+        computed.sort(key=lambda r: (r["p_value_adjusted"], r["lrt_pvalue"], str(r.get("gene") or "")))
+    return family, computed, status_counts
+
+
+def _paml_unavailable(test: str, status_counts: dict, method: str, *, legacy_key: bool = False) -> dict:
+    key = "paml_status_counts" if legacy_key else "status_counts"
+    details = {key: status_counts}
+    if legacy_key:
+        details["status_counts"] = status_counts
+    return _test_result(test, available=False, error="no computed PAML results",
+                        details=details, closest_alternative="Compara pairwise dN/dS (already computed)",
+                        method=method, internally_corrected=True)
+
+
 def _paml_branch_model(inputs: dict, data: dict) -> dict:
-    paml = data.get("paml") or {}
-    computed = [v for v in paml.values()
-                if isinstance(v, dict) and v.get("status") == "computed"]
+    paml, computed, status_counts = _paml_gene_family(data, "paml")
     if not computed:
-        status_counts: dict[str, int] = {}
-        for result in paml.values():
-            if isinstance(result, dict):
-                status = result.get("status") or "unknown"
-                status_counts[status] = status_counts.get(status, 0) + 1
-        return _test_result(
-            "paml_branch_model",
-            available=False,
-            error="no computed PAML results",
-            details={"paml_status_counts": status_counts},
-            closest_alternative="Compara pairwise dN/dS (already computed)",
-            method="PAML codeml branch model 2 LRT",
-        )
-    best = min(computed, key=lambda x: x.get("lrt_pvalue", 1.0))
+        return _paml_unavailable("paml_branch_model", status_counts, "PAML codeml branch model 2 LRT", legacy_key=True)
+    best = computed[0]
     return {
         **_test_result(
             "paml_branch_model",
             available=True,
             n=len(computed),
             statistic=best.get("lrt_statistic", best.get("lrt_chi2")),
-            p_value=best["lrt_pvalue"],
-            significant=best["lrt_pvalue"] < 0.05,
+            p_value=best["lrt_pvalue"], p_value_adjusted=best["p_value_adjusted"],
+            significant=best["significant"], significant_adjusted=best["significant"],
             effect_size=best.get("omega_foreground"),
             effect_size_name="omega_foreground",
-            effect_size_label=(
-            "positive selection"
-            if (best.get("omega_foreground") or 0) > 1 else "purifying/neutral"
-            ),
+            effect_size_label="lineage-wide rate shift",
             ci=_ci_unavailable("PAML branch model CI is not computed"),
             method="PAML codeml branch model 2 LRT",
         ),
         "per_gene": paml,
         "foreground_group": inputs.get("foreground", "primates"),
+        "internally_corrected": True,
         "details": {
             "best_gene": best.get("gene"),
             "omega_foreground": best.get("omega_foreground"),
             "omega_background": best.get("omega_background"),
             "acceleration_ratio": best.get("acceleration_ratio"),
             "computed_genes": len(computed),
+            "status_counts": status_counts,
         },
     }
+
+
+def _qualifying_beb(result: dict) -> list[dict]:
+    return [site for site in (result.get("beb_sites") or [])
+            if isinstance(site, dict) and isinstance(site.get("posterior"), (int, float)) and site["posterior"] >= 0.95]
+
+
+def _paml_positive_selection(test: str, key: str, inputs: dict, data: dict, *, branch_site: bool) -> dict:
+    family, computed, status_counts = _paml_gene_family(data, key)
+    method = ("PAML codeml branch-site Model A mixture-null LRT" if branch_site
+              else "PAML codeml site-model M7 versus M8 LRT")
+    if not computed:
+        return _paml_unavailable(test, status_counts, method)
+    best = computed[0]
+    qualifying = _qualifying_beb(best)
+    supported = bool(best["significant"] and qualifying)
+    omega_key = "omega_foreground_positive" if branch_site else "omega_positive_class"
+    prop_key = "prop_sites" if branch_site else "prop_positive"
+    warnings = ["Alignment error can create false-positive site support; inspect alignment sensitivity."]
+    if best["significant"] and not qualifying:
+        warnings.append("The model-level LRT is BH-significant but no BEB site reaches posterior >=0.95.")
+    return {**_test_result(test, available=True, n=len(computed), statistic=best.get("lrt_statistic"),
+                           p_value=best["lrt_pvalue"], p_value_adjusted=best["p_value_adjusted"],
+                           significant=supported, significant_adjusted=supported,
+                           effect_size=best.get(omega_key), effect_size_name=omega_key,
+                           effect_size_label="positive selection supported" if supported else "insufficient joint LRT/BEB support",
+                           ci=_ci_unavailable("PAML mixture/site model CI is not computed"), method=method, warnings=warnings),
+            "per_gene": family, "foreground_group": inputs.get("foreground", "primates") if branch_site else None,
+            "internally_corrected": True,
+            "details": {"best_gene": best.get("gene"), omega_key: best.get(omega_key), prop_key: best.get(prop_key),
+                        "qualifying_beb_sites": qualifying, "beb_threshold": 0.95, "computed_genes": len(computed),
+                        "status_counts": status_counts, "positive_selection_supported": supported,
+                        "mixture_null": branch_site}}
+
+
+def _paml_site_model(inputs: dict, data: dict) -> dict:
+    return _paml_positive_selection("paml_site_model", "paml_site", inputs, data, branch_site=False)
+
+
+def _paml_branch_site_model(inputs: dict, data: dict) -> dict:
+    return _paml_positive_selection("paml_branch_site_model", "paml_branch_site", inputs, data, branch_site=True)
 
 
 # ── test library / plan dispatch ────────────────────────────────────────────
@@ -620,7 +679,9 @@ TEST_LIBRARY: dict[str, dict] = {
     "permutation_test":    {"fn": permutation_test,    "kind": "ab", "constructs": {"set_difference"}},
     "cliffs_delta":        {"fn": cliffs_delta,        "kind": "ab", "constructs": {"set_difference"}},
     "cohens_d":            {"fn": cohens_d,            "kind": "ab", "constructs": {"set_difference"}},
-    "paml_branch_model":   {"fn": _paml_branch_model,  "kind": "paml", "constructs": {"lineage_specific_selection"}},
+    "paml_branch_model":   {"fn": _paml_branch_model, "kind": "paml", "constructs": {"lineage_specific_rate_shift"}},
+    "paml_site_model":     {"fn": _paml_site_model, "kind": "paml", "constructs": {"pervasive_positive_selection"}},
+    "paml_branch_site_model": {"fn": _paml_branch_site_model, "kind": "paml", "constructs": {"lineage_specific_positive_selection"}},
 }
 
 TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the supplied data dict):
@@ -633,7 +694,9 @@ TEST_LIBRARY_DOC = """Available tests (request by name; inputs reference the sup
 - permutation_test      inputs: {"a": "<var or group.metric>", "b": "<var or group.metric>", "statistic": "mean_diff|median_diff"}
 - cliffs_delta / cohens_d  inputs: {"a": "<...>", "b": "<...>"}
 - paml_branch_model  inputs: {"foreground": "primates"|"rodents"|"human"}.
-  Use when hypothesis involves lineage-specific acceleration or purifying selection.
+  Use for a lineage-wide rate shift, acceleration, or relaxed constraint; not site-level selection.
+- paml_site_model uses M7 versus M8 for pervasive positive selection and requires BH-significant LRT plus BEB >=0.95.
+- paml_branch_site_model uses branch-site Model A on the foreground and requires BH-significant LRT plus BEB >=0.95.
   Degrades gracefully (available=False) when codeml binary is not installed.
 - mirrortree_lite inputs: {"set_a": "starter", "set_b": "expanded.<name>", "background": "background.random_300"}.
   Use for cross_lineage_rate_correlation claims; reads data["rate_vectors"] and compares
@@ -1367,8 +1430,12 @@ def _closest_alternative(name: str) -> str:
         return "mann_whitney_posthoc"
     if "correl" in n or "regress" in n:
         return "spearman or pearson"
+    if "branch-site" in n or "branch site" in n:
+        return "use paml_branch_site_model (branch-site Model A, requires codeml)"
+    if "positive selection" in n or "site model" in n:
+        return "use paml_site_model (M7 versus M8, requires codeml)"
     if "pgls" in n or "phylo" in n or "paml" in n or "codeml" in n:
-        return "use paml_branch_model (branch model 2 LRT, requires codeml in PATH)"
+        return "use the PAML model matching the claim: branch rate shift, site, or branch-site"
     if "phenotype" in n or "rer" in n:
         return "rerconverge (secondary phenotype-association summary)"
     return f"none of the {len(TEST_LIBRARY)} library tests match; pick one of: {', '.join(TEST_LIBRARY)}"
@@ -1491,7 +1558,7 @@ def run_analysis_plan(plan: dict, data: dict) -> dict:
     corrections_applied: list[dict] = []
     if corr_key:
         idx_p = [(i, r.get("p_value")) for i, r in enumerate(results)
-                 if isinstance(r.get("p_value"), (int, float))]
+                 if isinstance(r.get("p_value"), (int, float)) and not r.get("internally_corrected")]
         if len(idx_p) >= 2:
             c = _correction([p for _, p in idx_p], corr_key)
             for (i, _), p_adj, rej in zip(idx_p, c["pvals_adjusted"], c["reject"]):

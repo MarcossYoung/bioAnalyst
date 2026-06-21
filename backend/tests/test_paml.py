@@ -13,9 +13,14 @@ from nullifier.tools.paml import (
     _label_newick,
     _run_codeml,
     _write_phylip,
+    _write_control,
+    _parse_site_classes,
+    _parse_beb_sites,
     run_branch_model,
+    run_site_model,
+    run_branch_site_model,
 )
-from nullifier.tools.compute import _paml_branch_model
+from nullifier.tools.compute import _paml_branch_model, _paml_site_model, _paml_branch_site_model
 
 _PRIMATE_ALIGNED = {
     "sequences": {
@@ -130,6 +135,67 @@ def test_cache_roundtrip():
                 paml_mod._conn = None
             paml_mod._CACHE_PATH = orig_path
             paml_mod._conn = orig_conn
+
+
+def test_control_file_supports_site_and_branch_site_parameters():
+    with tempfile.TemporaryDirectory() as tmp:
+        ctl = _write_control(tmp, 2, "a.phy", "t.nwk", "out.mlc",
+                             nssites=2, ncatg=10, fix_omega=1, omega=1.0,
+                             run_label="branch_site_null")
+        text = open(ctl).read()
+    assert "model    = 2" in text
+    assert "NSsites  = 2" in text
+    assert "ncatG    = 10" in text
+    assert "fix_omega = 1" in text
+    assert "omega    = 1.0" in text
+
+
+def test_site_class_and_beb_parsers():
+    with tempfile.TemporaryDirectory() as tmp:
+        mlc = os.path.join(tmp, "m8.mlc")
+        with open(mlc, "w") as handle:
+            handle.write("""p: 0.2 0.3 0.5\nw: 0.1 0.8 3.4\nBayes Empirical Bayes (BEB) analysis\n 42 K 0.987**\n 77 0.951 *\n\n""")
+        assert _parse_site_classes(mlc) == {"omega": 3.4, "proportion": 0.5}
+        sites = _parse_beb_sites(mlc)
+    assert sites[0] == {"position": 42, "amino_acid": "K", "posterior": 0.987, "significance_marker": "**"}
+    assert sites[1]["amino_acid"] is None
+
+
+def test_site_and_branch_site_lrt_definitions():
+    def fake_pair(*args, **kwargs):
+        prep = {"seqs": _PRIMATE_ALIGNED["sequences"], "foreground": {"Homo_sapiens"}}
+        parsed = {"lnl_null": -105.0, "lnl_alt": -100.0, "classes": {"omega": 4.0, "proportion": 0.1},
+                  "beb_sites": [{"position": 2, "posterior": 0.99}], "omega_fg": 4.0,
+                  "cache_key": "test"}
+        return prep, parsed, None
+    with patch("nullifier.tools.paml._run_pair", side_effect=fake_pair):
+        site = run_site_model("ENSG", "GENE", _PRIMATE_ALIGNED, use_cache=False)
+        branch_site = run_branch_site_model("ENSG", "GENE", _PRIMATE_ALIGNED, use_cache=False)
+    assert site["lrt_statistic"] == 10.0
+    assert site["lrt_pvalue"] == pytest.approx(0.006738, abs=1e-6)
+    assert branch_site["lrt_pvalue"] == pytest.approx(0.000783, abs=1e-6)
+
+
+def test_paml_consumers_bh_correct_and_require_beb_support():
+    records = {
+        "A": {"status": "computed", "gene": "A", "lrt_pvalue": 0.01, "lrt_statistic": 8,
+              "omega_positive_class": 3.0, "prop_positive": 0.1, "beb_sites": []},
+        "B": {"status": "computed", "gene": "B", "lrt_pvalue": 0.02, "lrt_statistic": 7,
+              "omega_positive_class": 2.0, "prop_positive": 0.2,
+              "beb_sites": [{"position": 4, "posterior": 0.98}]},
+        "C": {"status": "computed", "gene": "C", "lrt_pvalue": 0.5, "lrt_statistic": 1,
+              "omega_positive_class": 1.2, "prop_positive": 0.3, "beb_sites": []},
+    }
+    result = _paml_site_model({}, {"paml_site": records})
+    assert result["p_value_adjusted"] == 0.03
+    assert result["significant"] is False
+    assert result["per_gene"]["B"]["p_value_adjusted"] == 0.03
+    assert result["internally_corrected"] is True
+
+    bs = {k: {**v, "omega_foreground_positive": v["omega_positive_class"], "prop_sites": v["prop_positive"]}
+          for k, v in records.items()}
+    branch_site = _paml_branch_site_model({}, {"paml_branch_site": bs})
+    assert branch_site["method"].endswith("mixture-null LRT")
 
 
 def test_aggregate_no_data():

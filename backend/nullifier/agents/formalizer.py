@@ -63,7 +63,7 @@ FORMALIZER_STAGE2_SPEC = AgentSpec(
     output_contract=OutputContract(
         summary="Structured atomic-claim decomposition.",
         fields=(
-            OutputField("atomic_claims", "List of minimal testable predictions. Each claim object must include statement, null_hypothesis, and construct: set_difference, cross_lineage_rate_correlation, or phenotype_association."),
+            OutputField("atomic_claims", "List of minimal testable predictions. Constructs include set_difference, cross_lineage_rate_correlation, phenotype_association, pervasive_positive_selection, lineage_specific_positive_selection, and lineage_specific_rate_shift."),
             OutputField("key_search_terms", "Search terms for literature retrieval."),
         ),
         notes=("The top-level JSON value must be an object, not a bare array.",),
@@ -72,7 +72,10 @@ FORMALIZER_STAGE2_SPEC = AgentSpec(
 
 
 BIOLOGY_DOMAINS = {"biology", "neuroscience", "genomics", "molecular_biology", "neurobiology"}
-ALLOWED_CLAIM_CONSTRUCTS = {"set_difference", "cross_lineage_rate_correlation", "phenotype_association"}
+ALLOWED_CLAIM_CONSTRUCTS = {
+    "set_difference", "cross_lineage_rate_correlation", "phenotype_association",
+    "pervasive_positive_selection", "lineage_specific_positive_selection", "lineage_specific_rate_shift",
+}
 
 
 def _text_list(value) -> list[str]:
@@ -169,6 +172,8 @@ def _normalize_stage2_output(stage2: dict) -> dict:
         normalized_claim["statement"] = statement.strip()
         normalized_claim["null_hypothesis"] = null_hypothesis.strip()
         construct = str(claim.get("construct") or "").strip()
+        if construct == "lineage_specific_selection":
+            construct = "lineage_specific_rate_shift"
         if construct not in ALLOWED_CLAIM_CONSTRUCTS:
             construct = _infer_claim_construct(normalized_claim)
         normalized_claim["construct"] = construct
@@ -184,6 +189,14 @@ def _infer_claim_construct(claim: dict) -> str:
         str(claim.get(k, "") or "")
         for k in ("statement", "relationship", "context", "mechanism", "null_hypothesis")
     ).lower()
+    lineage_terms = any(term in text for term in ("lineage", "branch", "primate", "human", "rodent", "cetacean", "bat"))
+    positive_terms = any(term in text for term in ("positive selection", "adaptive selection", "selected codon", "selected site", "branch-site", "branch site"))
+    if positive_terms and lineage_terms:
+        return "lineage_specific_positive_selection"
+    if positive_terms:
+        return "pervasive_positive_selection"
+    if lineage_terms and any(term in text for term in ("acceleration", "accelerated", "rate shift", "relaxed constraint", "omega shift", "dnds shift")):
+        return "lineage_specific_rate_shift"
     if (
         ("correlated" in text or "co-vary" in text or "covary" in text or "co-evol" in text)
         and ("lineage" in text or "phylogen" in text or "mammal" in text or "species" in text or "evolution" in text)

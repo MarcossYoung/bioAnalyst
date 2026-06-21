@@ -1,154 +1,393 @@
-# PAML positive-selection models — site (M7/M8) + branch-site (Model A)
+# PAML positive-selection models: site M7/M8 and branch-site Model A
 
-**Status:** Design only (no code yet)
+**Status:** Implementation ready
+
 **Date:** 2026-06-19
-**Prompted by:** Jeffares et al. 2015, *A Beginner's Guide to Estimating the
+
+**Basis:** Jeffares et al. 2015, *A Beginner's Guide to Estimating the
 Non-synonymous to Synonymous Rate Ratio of all Protein-Coding Genes in a Genome*
-(Methods Mol Biol 1201, ch. 4).
 
-## Context
+## Summary
 
-The genomic compute layer estimates dN/dS only with **PAML branch model 2**
-(`tools/paml.py:run_branch_model` → null `model=0` vs alt `model=2`, `NSsites=0`).
-Jeffares 2015 — the canonical genome-scale dN/dS guide — ratifies most of our
-stack (CODEML ML, PAL2NAL codon alignment, saturation gating, BH correction,
-Mann–Whitney group tests) but exposes one substantive gap: **branch model 2
-detects a lineage-wide ω *shift*, not site-level positive selection.**
-Gene-wide / branch-wide average ω rarely exceeds 1 even under genuine positive
-selection because most codons stay under purifying selection. The field standard
-for *detecting adaptation* is therefore **site models (M7 vs M8)** and
-**branch-site Model A** (ω varies by site *and* branch, with Bayes Empirical
-Bayes posteriors flagging the selected codons). Any "gene X is under positive
-selection" claim is currently answered with a weaker test than the literature
-standard.
+Nullifier currently runs only the PAML branch model (`model=0` versus
+`model=2`, `NSsites=0`). That test detects a lineage-wide shift in ω, but it is
+not a direct test for positive selection at a subset of codons. A branch-wide
+average can remain below one even when a small number of sites are adaptive.
 
-A second, smaller defect the paper exposes: `_paml_branch_model`
-(`tools/compute.py:562`) declares significance from the single **min** per-gene
-p-value with **no multiple-testing correction** across genes — a cherry-pick the
-paper explicitly warns against at genome scale.
+Add two standard CODEML tests:
 
-Goal: add site + branch-site CODEML models behind the existing
-`paml.py` / `TEST_LIBRARY` / methodologist seam, and correct the gene-family
-p-values with Benjamini–Hochberg. Preserve the graceful-degradation contract —
-every path returns a typed status dict; absence of the `codeml` binary ⇒
-`available=False`, never a crash.
+- Site model M7 versus M8 for pervasive positive selection across the tree.
+- Branch-site Model A for positive selection at sites on specified foreground
+  branches.
 
-## Decisions
+Also apply Benjamini-Hochberg correction across genes to all three PAML model
+families. The current branch-model consumer selects the minimum raw per-gene
+p-value, which is not valid for a genome-scale family of tests.
 
-- **Runtime scope:** compute branch + site + branch-site **eagerly for all
-  starter genes** (matches the current pre-plan fetch design, where PAML runs in
-  the analyst stage before the methodologist picks tests), gated by `[paml]`
-  config flags, both new models **on by default**. The 90-day codeml cache and
-  per-gene timeout absorb the added cost.
-- **FDR:** apply **Benjamini–Hochberg across per-gene p-values** for branch,
-  site, and branch-site consumers; significance requires adjusted p<0.05. This
-  also repairs the existing branch-model cherry-pick (existing branch-model
-  tests will be updated to expect adjusted p).
+The implementation must preserve the existing graceful-degradation contract:
+PAML functions return typed status dictionaries and never terminate a run when
+CODEML or usable sequence data is unavailable.
 
-## Plan
+## Scope
 
-### 1. `backend/nullifier/tools/paml.py` — new control writers, parsers, runners
+### Included
 
-- **Generalize `_write_control`** (currently hardcodes `NSsites=0`) to accept
-  `nssites`, `ncatg`, `fix_omega`, `omega`. Reuse `_write_phylip`,
-  `_label_newick`, `_run_codeml`, `_parse_lnl`, `_find_codeml`, the SQLite cache,
-  and the `_FOREGROUND_GROUPS` / `_MAMMAL_SPECIES` sets unchanged.
-- **Site models (no foreground):** `run_site_model(ensembl_id, gene_symbol,
-  aligned, use_cache)` — M7 (`model=0, NSsites=7, ncatG=10`) vs M8
-  (`model=0, NSsites=8, ncatG=10`). LRT **df=2**, `p = chi2.sf(lrt, 2)`.
-- **Branch-site Model A (needs foreground):** `run_branch_site_model(...,
-  foreground)` — alt `model=2, NSsites=2, fix_omega=0, omega=1.5`; null
-  `model=2, NSsites=2, fix_omega=1, omega=1`. LRT df=1 but the asymptotic null is
-  a **½:½ mixture of point-mass-0 and χ²₁** (Yang & dos Reis 2011; paper Note 5)
-  → `p = 0.5 * chi2.sf(lrt, 1)` (lrt=0 ⇒ p=1). Reuse `_label_newick` for the
-  `#1` foreground marking, exactly as the branch model does.
-- **New parsers:** `_parse_site_classes(mlc)` (proportion + ω of the positive
-  class from M8) and `_parse_beb_sites(mlc)` (Bayes Empirical Bayes "Positively
-  selected sites" → list of `{position, posterior}`). Branch-site reuses the BEB
-  parser for the foreground ω>1 class.
-- **Result dicts** mirror `run_branch_model`'s contract plus model-specific
-  fields: site → `omega_positive_class`, `prop_positive`, `lrt_pvalue`,
-  `beb_sites`; branch-site → `omega_foreground_positive`, `prop_sites`,
-  `lrt_pvalue` (mixture-corrected), `beb_sites`. Same `status` vocabulary
-  (`computed` / `codeml_unavailable` / `no_foreground_seqs` / `timeout` /
-  `error`).
-- **Cache keys namespaced per model** (`…:site:…`, `…:branchsite:…`) so they do
-  not collide with the branch-model cache. Make the codeml `timeout` configurable
-  via `[paml] timeout_seconds` (site/branch-site runs are slower).
+- M7/M8 site-model runner, parser, cache, and compute consumer.
+- Branch-site Model A runner, parser, cache, and compute consumer.
+- Gene-level BH correction for branch, site, and branch-site model families.
+- Formalizer constructs and deterministic Methodologist routing.
+- Analyst data collection, pipeline wiring, events, and frontend event labels.
+- Interpreter and Skeptic guidance for BEB-supported positive-selection claims.
+- Configuration, unit tests, contract tests, and regression coverage.
 
-### 2. `backend/nullifier/agents/analyst.py` — drive the new models
+### Deferred
 
-- In `_fetch_paml_data` (analyst.py:58), after the branch model, also call
-  `run_site_model` / `run_branch_site_model` per starter gene **when the
-  `[paml]` flags enable them**, reusing the already-fetched
-  `ensembl.fetch_gene_tree_aligned` alignment (one fetch, three model runs).
-- Return them in separate maps; surface as `data["paml_site"]` and
-  `data["paml_branch_site"]` (alongside today's `data["paml"]`), at the point
-  where `pipeline.py:125` already wires `analyst_data["data"]["paml"]`. Add
-  site/branch-site variants of the `paml.gene_*` events in `events.py`.
+- A low-power floor based on sequence identity or synonymous tree distance.
+- Per-column alignment-confidence masking such as GUIDANCE.
+- Changing how foreground branches are selected or labeled.
+- Parallel execution of CODEML jobs.
 
-### 3. `backend/nullifier/tools/compute.py` — two new TEST_LIBRARY tests + BH fix
+The existing MAFFT-versus-PRANK diagnostic remains the available alignment
+sensitivity check. Until column masking is implemented, alignment error must be
+reported as an explicit positive-selection caveat.
 
-- `_paml_site_model(inputs, data)` reads `data["paml_site"]`; constructs
-  `{"pervasive_positive_selection"}`. `_paml_branch_site_model(inputs, data)`
-  reads `data["paml_branch_site"]`; constructs
-  `{"lineage_specific_positive_selection"}`. Both mirror `_paml_branch_model`'s
-  `_test_result` shape (so `validate_test_result` passes), expose `per_gene` and
-  the best gene's `beb_sites`, and degrade to `available=False` with status
-  counts when nothing computed.
-- **BH across genes:** add a helper that runs the existing `benjamini_hochberg`
-  over the `per_gene` `lrt_pvalue`s and reports `p_value_adjusted` +
-  `significant = adjusted < 0.05`. Apply it in all three consumers
-  (`_paml_branch_model` included). Register the two `kind:"paml"` entries — the
-  `_run_one` dispatch (`compute.py:1351`) already routes `kind=="paml"` as
-  `fn(inputs, data)`, unchanged. Update `TEST_LIBRARY_DOC` and
-  `_closest_alternative` (`compute.py:1370`) so "site" / "branch-site" /
-  "positive selection" route to the new tests.
+## Scientific model definitions
 
-### 4. Agents — methodologist / interpreter / skeptic prompts
+### Existing branch model
 
-- **Methodologist** (`methodologist.py:215`): teach the Jeffares Table-4 mapping —
-  lineage-specific positive selection ⇒ `paml_branch_site_model`; pervasive
-  (whole-tree) positive selection ⇒ `paml_site_model`; lineage *rate shift /
-  relaxed constraint* ⇒ existing `paml_branch_model`. Keep BH as the correction.
-- **Interpreter** (`interpreter.py:29`): read BEB sites, positive-class ω and
-  proportion; enforce the honesty framing — a positive-selection conclusion
-  requires BEB-supported sites **and** a BH-significant LRT; state the ½:½
-  mixture caveat; state that site-level ω>1 ≠ gene-wide ω>1.
-- **Skeptic** (`skeptic.py`): let the new evidence bear on the positive-selection
-  alternative without overclaiming; reuse existing guardrails and add the paper's
-  dominant-FP caveat (alignment error) when BEB sites are few or low-posterior.
+Purpose: detect a lineage-wide ω shift, including relaxed constraint or
+acceleration. It must not be described as a site-level positive-selection test.
 
-### 5. `backend/nullifier/config/default_config.toml`
+- Null: `model=0`, `NSsites=0`.
+- Alternative: `model=2`, `NSsites=0`.
+- LRT degrees of freedom: 1.
+- Significance: per-gene BH-adjusted p-value below 0.05.
 
-Add `[paml] run_site_model = true`, `run_branch_site_model = true`,
-`timeout_seconds = 300`. Read via the existing loader overlay (no user config
-change required).
+### Site model M7 versus M8
 
-## Deferred (documented, not built this pass)
+Purpose: detect pervasive positive selection at a subset of sites across the
+whole tree. It does not use a foreground branch.
 
-- **Low-power / too-closely-related floor** (paper Note 1: >95% identity, or
-  synonymous tree distance <0.5 ⇒ underpowered). Future: parse dS from codeml and
-  flag `low_power`, analogous to the existing `dnds_saturation` upper-bound gate.
-- **Per-column alignment-confidence masking (GUIDANCE-style).** The existing
-  MAFFT-vs-PRANK aligner cross-check partially covers the paper's dominant-FP
-  concern; full column masking is out of scope. Add a provenance caveat only.
+- Null M7: `model=0`, `NSsites=7`, `ncatG=10`.
+- Alternative M8: `model=0`, `NSsites=8`, `ncatG=10`.
+- LRT degrees of freedom: 2.
+- LRT p-value: `chi2.sf(lrt, 2)`.
+- Model output: positive-class ω, positive-class proportion, and BEB sites from
+  M8.
 
-## Verification
+### Branch-site Model A
 
-- **Unit (`backend/tests/test_paml_models.py`):** control-file generation asserts
-  the right `model` / `NSsites` / `ncatG` / `fix_omega` lines per model; parser
-  tests on captured codeml `.mlc` fixtures (site classes, BEB sites, lnL); LRT
-  math including the branch-site ½:½ mixture; graceful degradation returns the
-  right `status` when `_find_codeml()` is None (monkeypatched).
-- **Contract:** `validate_test_result` passes for both new tests; the BH helper
-  returns adjusted p-values matching `benjamini_hochberg` on a known vector.
-- **Methodologist:** a "positive selection in primates" hypothesis selects
-  `paml_branch_site_model`; a pervasive-selection hypothesis selects
-  `paml_site_model` (mock plan).
-- **Regression:** existing 86 compute tests pass; update branch-model tests that
-  asserted significance on the uncorrected min p-value to expect BH-adjusted p.
-- **End-to-end CLI** on a primate-accelerated starter set: with codeml installed,
-  branch-site reports BEB sites + a BH-adjusted LRT; without codeml, all three
-  PAML tests report `available=False` and the run completes. Confirm cache keys
-  are namespaced per model (no collision with the branch cache).
+Purpose: detect positive selection at a subset of sites on configured
+foreground branches.
+
+- Null: `model=2`, `NSsites=2`, `fix_omega=1`, `omega=1`.
+- Alternative: `model=2`, `NSsites=2`, `fix_omega=0`, `omega=1.5`.
+- LRT degrees of freedom: 1 with a ½ point-mass-at-zero and ½ χ²₁ null.
+- LRT p-value: `1` when `lrt == 0`; otherwise `0.5 * chi2.sf(lrt, 1)`.
+- Model output: foreground positive-class ω, affected-site proportion, and BEB
+  sites from the alternative.
+
+The first implementation reuses `_label_newick()` and the existing foreground
+groups. Multiple labeled tips therefore represent a shared foreground category;
+changing this biological definition is outside this feature.
+
+### Positive-selection decision rule
+
+A site or branch-site result supports positive selection only when both are
+true:
+
+1. The selected gene has a gene-family BH-adjusted LRT p-value below 0.05.
+2. At least one parsed BEB site has posterior probability at or above 0.95.
+
+An LRT without a qualifying BEB site is model-level evidence without localized
+site support. A BEB site without a BH-significant LRT is not sufficient.
+
+## Claim constructs and test routing
+
+The feature must be reachable from normal pipeline input. Add these claim
+constructs to the formalizer and semantic normalization contracts:
+
+| Construct | Meaning | Compute test |
+| --- | --- | --- |
+| `pervasive_positive_selection` | Selected sites across the tree | `paml_site_model` |
+| `lineage_specific_positive_selection` | Selected sites on a foreground lineage | `paml_branch_site_model` |
+| `lineage_specific_rate_shift` | Branch-wide acceleration or relaxed constraint | `paml_branch_model` |
+
+Update construct inference with specific positive-selection terms before the
+general set-difference fallback. The Methodologist must route these constructs
+deterministically. LLM-selected plans remain restricted to tests registered for
+the claim construct.
+
+The existing ambiguous `lineage_specific_selection` construct is replaced by
+the explicit constructs above. Compatibility normalization may map it to
+`lineage_specific_rate_shift`, because the existing implementation only
+provides the branch model.
+
+## Runtime and data flow
+
+For every starter gene, the Analyst fetches the Ensembl Compara alignment once
+and may run all three model families:
+
+```text
+Compara alignment
+  ├─ branch model
+  ├─ site M7/M8
+  └─ branch-site Model A
+```
+
+Site and branch-site models are enabled by default and can be disabled
+independently. On a cold cache, one gene requires six CODEML processes: two per
+model family. `timeout_seconds` is a per-process limit, not a total per-gene
+deadline.
+
+The Analyst returns separate maps:
+
+```text
+paml_data
+paml_site_data
+paml_branch_site_data
+```
+
+The prepared compute data exposes them as:
+
+```text
+data["paml"]
+data["paml_site"]
+data["paml_branch_site"]
+```
+
+Pipeline setup and leave-one-out rebuilds must preserve all three maps. Site and
+branch-site output is not added to generic scalar group metrics in this pass;
+dedicated compute consumers read the result maps directly.
+
+## Result contracts
+
+All runner functions return a dictionary containing `status` and `gene`.
+Expected statuses are:
+
+- `computed`
+- `codeml_unavailable`
+- `no_foreground_seqs` for foreground-dependent models
+- `insufficient_sequences`
+- `timeout`
+- `error`
+
+Upstream alignment retrieval may additionally produce `no_compara_alignment`.
+
+### Site-model computed result
+
+```json
+{
+  "status": "computed",
+  "gene": "GENE",
+  "model": "site",
+  "lrt_statistic": 0.0,
+  "lrt_pvalue": 1.0,
+  "omega_positive_class": 1.0,
+  "prop_positive": 0.0,
+  "beb_sites": [],
+  "species_count": 0,
+  "alignment_length": 0,
+  "provenance": {}
+}
+```
+
+### Branch-site computed result
+
+```json
+{
+  "status": "computed",
+  "gene": "GENE",
+  "model": "branch_site",
+  "foreground_group": "primates",
+  "lrt_statistic": 0.0,
+  "lrt_pvalue": 1.0,
+  "omega_foreground_positive": 1.0,
+  "prop_sites": 0.0,
+  "beb_sites": [],
+  "species_count": 0,
+  "alignment_length": 0,
+  "provenance": {}
+}
+```
+
+Each BEB entry contains:
+
+```json
+{
+  "position": 42,
+  "amino_acid": "K",
+  "posterior": 0.987,
+  "significance_marker": "*"
+}
+```
+
+Parsers must tolerate absent amino-acid or significance-marker fields while
+requiring a valid position and posterior probability.
+
+## Multiple-testing ownership
+
+Each PAML compute consumer owns correction across genes within its model family:
+
+1. Collect finite `lrt_pvalue` values from `status="computed"` results.
+2. Run the existing `benjamini_hochberg()` helper.
+3. Add `p_value_adjusted` and `significant` to each computed per-gene result.
+4. Select the best gene by adjusted p-value, then raw p-value as a stable
+   tie-breaker.
+5. Expose both raw and adjusted values in the typed test result.
+
+PAML test results must be marked as internally corrected. The generic
+`run_analysis_plan()` correction must not overwrite their gene-family adjusted
+p-values. Any across-test-family correction should use separate fields and is
+not part of this feature.
+
+## Implementation changes
+
+### `backend/nullifier/tools/paml.py`
+
+- Generalize `_write_control()` to accept `nssites`, `ncatg`, `fix_omega`,
+  `omega`, and a unique run label.
+- Add shared sequence/tree preparation and minimum-sequence validation.
+- Read `[paml].timeout_seconds` and pass it to every `_run_codeml()` call.
+- Add `_parse_site_classes()` and `_parse_beb_sites()`.
+- Add `run_site_model()` and `run_branch_site_model()`.
+- Refactor `run_branch_model()` onto shared timeout and cache helpers without
+  changing its scientific definition.
+- Namespace cache keys with `branch`, `site`, or `branch_site`; include the
+  foreground for foreground-dependent models and the alignment hash for all
+  models.
+
+### `backend/nullifier/agents/analyst.py` and pipeline wiring
+
+- Refactor `_fetch_paml_data()` to fetch each alignment once and return all
+  configured model maps.
+- Emit model-specific progress and failure events.
+- Add the new maps to Analyst output and prepared compute data.
+- Preserve them in `pipeline.py` and robustness rebuilds.
+
+### `backend/nullifier/tools/compute.py`
+
+- Add a shared PAML gene-family BH helper.
+- Apply it to `_paml_branch_model()`.
+- Add `_paml_site_model()` and `_paml_branch_site_model()`.
+- Register both tests in `TEST_LIBRARY` with their explicit constructs.
+- Update `TEST_LIBRARY_DOC` and `_closest_alternative()`.
+- Keep unavailable results valid under `validate_test_result()` and include
+  status counts in `details`.
+
+The site and branch-site consumers expose the selected gene's positive-class
+parameters and qualifying BEB sites. The branch consumer describes its effect
+as a rate shift; it must not label `omega_foreground > 1` alone as a validated
+site-level positive-selection result.
+
+### Formalizer and Methodologist
+
+- Extend allowed constructs, normalization, inference, and output descriptions.
+- Add deterministic construct-to-test mappings.
+- Set Methodologist correction to `none` for plans containing only internally
+  corrected PAML tests.
+- Document the distinction between rate shifts, pervasive selection, and
+  lineage-specific site selection in the Methodologist context.
+
+### Interpreter and Skeptic
+
+The Interpreter currently renders only top-level typed fields. Add a bounded
+PAML summary containing the selected gene, model parameters, adjusted p-value,
+and qualifying BEB sites. Do not dump every per-gene record into the prompt.
+
+Interpreter rules:
+
+- Require both the BH-significant LRT and qualifying BEB support before stating
+  that positive selection is supported.
+- State that site-level ω above one does not imply gene-wide ω above one.
+- Identify the branch-site mixture-null correction.
+- Report unsuccessful or insufficient alignments as coverage limitations.
+
+Skeptic rules:
+
+- Allow valid site and branch-site evidence to bear on the positive-selection
+  alternative.
+- Flag alignment error as the dominant false-positive concern when BEB support
+  is sparse, low-posterior, or alignment-sensitive.
+- Do not let the existing branch model stand in for a branch-site test.
+
+### Events and frontend
+
+Use model-aware PAML events for started, completed, timeout, and failed states.
+Every event includes `gene` and `model`; foreground-dependent events also include
+`foreground`. Update `EventTimeline.tsx` to render `branch`, `site`, and
+`branch-site` labels and ensure failures are mapped to the Analyst stage.
+
+### Configuration
+
+Add defaults:
+
+```toml
+[paml]
+codeml_path = ""
+run_site_model = true
+run_branch_site_model = true
+timeout_seconds = 300
+```
+
+The existing deep-merge loader makes these keys available to users with older
+configuration files.
+
+## Delivery sequence
+
+1. Add claim constructs and deterministic routing tests.
+2. Refactor shared PAML control, timeout, cache, and parsing infrastructure.
+3. Implement and unit-test site and branch-site runners.
+4. Refactor Analyst collection and pipeline data wiring.
+5. Add compute consumers and gene-family BH correction.
+6. Add interpreter summaries, Skeptic rules, events, and frontend labels.
+7. Run targeted contract tests, the complete backend suite, and the frontend
+   production build.
+
+This order makes each layer testable before the next layer depends on it.
+
+## Verification and acceptance criteria
+
+### Unit tests
+
+- Control files contain the correct `model`, `NSsites`, `ncatG`, `fix_omega`,
+  and `omega` values for every null and alternative.
+- Captured CODEML `.mlc` fixtures parse lnL, positive classes, and BEB sites.
+- M7/M8 uses χ² with 2 degrees of freedom.
+- Branch-site uses the mixture p-value and returns `p=1` for `lrt=0`.
+- Cache keys cannot collide across model families or foregrounds.
+- Config flags disable only their corresponding model.
+- Configured timeout reaches every CODEML subprocess.
+- Missing CODEML, missing alignment, insufficient sequences, timeout, execution
+  failure, and parse failure return typed dictionaries without raising.
+
+### Compute and routing tests
+
+- BH-adjusted values match `benjamini_hochberg()` for a known vector.
+- Branch-model significance no longer uses the minimum unadjusted p-value.
+- Both new consumers pass `validate_test_result()` when computed or unavailable.
+- Positive-selection significance requires adjusted LRT and BEB support.
+- Plan-level correction does not overwrite PAML gene-family correction.
+- A pervasive-selection claim selects `paml_site_model`.
+- A primate-specific positive-selection claim selects
+  `paml_branch_site_model`.
+- A lineage acceleration or relaxed-constraint claim selects
+  `paml_branch_model`.
+
+### Integration and regression tests
+
+- The Analyst fetches one alignment per gene while running enabled models.
+- All model maps reach Compute and robustness rebuilds.
+- Model-aware PAML events render in the frontend timeline.
+- Without CODEML, all PAML tests return `available=false` and the run completes.
+- With fixture-backed successful runs, site and branch-site output includes BEB
+  sites and adjusted p-values.
+- Existing backend tests pass after branch-model expectations are updated.
+- The frontend production build succeeds.
+
+## Completion criteria
+
+The feature is complete when a normal hypothesis run can route an explicit
+positive-selection claim to the appropriate PAML model, execute or gracefully
+degrade all configured model families, correct per-gene tests, expose bounded
+BEB evidence to interpretation, and complete without uncaught CODEML errors.
