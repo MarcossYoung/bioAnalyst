@@ -29,7 +29,12 @@ def cmd_run(args):
 
     formalized = evidence = verdict = analyst = None
 
-    for event in run_pipeline(raw, confirm_callback=confirm_cb, max_papers=args.max_papers):
+    for event in run_pipeline(
+        raw,
+        confirm_callback=confirm_cb,
+        max_papers=args.max_papers,
+        skip_librarian=args.skip_librarian,
+    ):
         if debug:
             console.print(f"[dim][{event.type}] {event.payload}[/dim]")
         _handle_event(event, console)
@@ -80,6 +85,8 @@ def _handle_event(event, console) -> None:
             f"  [{p['claim_id']}] strength=[{strength_color}]{p['evidence_strength']}[/{strength_color}]"
             f", novelty={p['novelty_flag']}"
         )
+    elif t == "librarian_skipped":
+        console.print(f"  [yellow]Librarian skipped: {p['reason']}[/yellow]")
     elif t == "formalizer_detected_completed_analysis":
         console.print(f"  [yellow]Detected {p['finding_count']} completed-analysis finding(s) — critique mode will activate[/yellow]")
     elif t == "analyst_started":
@@ -268,12 +275,14 @@ def main():
 
     p_run = sub.add_parser("run", help="Run the full pipeline on a hypothesis file")
     p_run.add_argument("--input", required=True, help="Path to hypothesis text file")
-    p_run.add_argument("--max-papers", type=int, default=6,
-                       help="Max papers retrieved per atomic claim (default: 6)")
+    p_run.add_argument("--max-papers", type=int, default=4,
+                       help="Max papers retrieved per atomic claim (default: 4)")
     p_run.add_argument("--output-json", default=None,
                        help="Save full report JSON to this path")
     p_run.add_argument("--no-confirm", action="store_true",
                        help="Skip the hypothesis confirmation gate")
+    p_run.add_argument("--skip-librarian", action="store_true",
+                       help="Skip literature retrieval/synthesis while running all other stages")
     p_run.add_argument("--debug", action="store_true",
                        help="Print raw event stream alongside normal output")
     p_run.set_defaults(func=cmd_run)

@@ -23,7 +23,7 @@ def init_db() -> None:
                 status          TEXT NOT NULL DEFAULT 'pending',
                 created_at      REAL NOT NULL,
                 completed_at    REAL,
-                max_papers      INTEGER NOT NULL DEFAULT 12,
+                max_papers      INTEGER NOT NULL DEFAULT 4,
                 formalized_json TEXT,
                 evidence_json   TEXT,
                 verdict_json    TEXT,

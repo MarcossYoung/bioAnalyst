@@ -133,6 +133,38 @@ def test_malformed_verdict_warns_but_run_completes(monkeypatch):
     assert not any(event.type == "run_failed" for event in events)
 
 
+def test_skip_librarian_does_not_call_retrieval_and_still_completes(monkeypatch):
+    _patch_pipeline_basics(monkeypatch, starter_entities=[])
+
+    def fail_retrieve(*args, **kwargs):
+        raise AssertionError("retrieve_evidence should not run")
+
+    observed_evidence = []
+
+    def fake_stress_test(formalized, evidence, analyst_result=None, **kwargs):
+        observed_evidence.append(evidence)
+        return {"verdict": "NOVEL-UNTESTED", "scores": dict(CORE_SCORES)}
+
+    monkeypatch.setattr(pipeline, "retrieve_evidence", fail_retrieve)
+    monkeypatch.setattr(pipeline, "stress_test", fake_stress_test)
+
+    events = list(pipeline.run_pipeline("raw input", skip_librarian=True))
+
+    assert any(event.type == "librarian_skipped" for event in events)
+    assert any(
+        event.type == "stage_completed" and event.payload["stage"] == "librarian"
+        for event in events
+    )
+    assert any(event.type == "verdict_ready" for event in events)
+    assert any(event.type == "run_completed" for event in events)
+    assert not any(event.type == "run_failed" for event in events)
+    assert observed_evidence
+    assert observed_evidence[0]["librarian_skipped"] is True
+    claim = observed_evidence[0]["claim_evidence"]["claim_1"]
+    assert claim["retrieved_papers"] == []
+    assert claim["evidence_strength"] == "not_assessed"
+
+
 def test_raw_verdict_violations_survive_agent_normalization(monkeypatch):
     _patch_pipeline_basics(monkeypatch, starter_entities=[])
 

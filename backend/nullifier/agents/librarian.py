@@ -78,7 +78,7 @@ LIBRARIAN_SYNTHESIS_SPEC = AgentSpec(
 )
 
 
-def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 12, on_event=None) -> dict:
+def retrieve_evidence(formalized: dict, max_papers_per_claim: int = 4, on_event=None) -> dict:
     budget = float(
         load_config().get("literature", {}).get(
             "per_claim_search_budget_seconds", _PER_CLAIM_SEARCH_BUDGET

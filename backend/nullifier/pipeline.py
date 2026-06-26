@@ -17,6 +17,44 @@ from .tools.genomic_data import build_data
 from .tools.llm_client import TRACKER
 
 
+def _claim_id(raw_claim: dict, idx: int) -> str:
+    value = (raw_claim or {}).get("id")
+    return str(value).strip() if value else f"claim_{idx + 1}"
+
+
+def _skipped_librarian_evidence(formalized: dict, reason: str) -> dict:
+    """Return the Librarian-shaped evidence object expected by Skeptic."""
+    claim_evidence = {}
+    for idx, raw_claim in enumerate(formalized.get("atomic_claims", []) or []):
+        cid = _claim_id(raw_claim, idx)
+        claim_evidence[cid] = {
+            "claim_id": cid,
+            "retrieved_papers": [],
+            "queries_used": [],
+            "confounders_identified": [],
+            "evidence_strength": "not_assessed",
+            "novelty_flag": "not_assessed",
+            "literature_gap": reason,
+            "synthesis": reason,
+            "classifier_degraded": False,
+            "classification_summary": {
+                "retrieved": 0,
+                "classified": 0,
+                "dropped": 0,
+                "drop_reasons": {},
+            },
+            "librarian_skipped": True,
+            "librarian_errors": [reason],
+        }
+    return {
+        "claim_evidence": claim_evidence,
+        "cited_literature_validated": [],
+        "classifier_degraded": False,
+        "librarian_skipped": True,
+        "skip_reason": reason,
+    }
+
+
 def _run_analyst_stage(
     formalized: dict,
     domain: str,
@@ -181,8 +219,9 @@ def _run_analyst_stage(
 def run_pipeline(
     raw_text: str,
     confirm_callback: Callable[[dict], dict | None] | None = None,
-    max_papers: int = 12,
+    max_papers: int = 4,
     cancel_check: Callable[[], bool] | None = None,
+    skip_librarian: bool = False,
 ) -> Generator[ev.Event, None, None]:
     """Generator that yields Event objects as the pipeline progresses.
 
@@ -241,14 +280,20 @@ def run_pipeline(
             return
         n_claims = len(formalized.get("atomic_claims", []))
         lib_events: list[ev.Event] = []
-        lib_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="librarian")
-        lib_future = lib_executor.submit(
-            retrieve_evidence,
-            formalized,
-            max_papers_per_claim=max_papers,
-            on_event=lib_events.append,
-        )
-        yield ev.stage_started("librarian", f"Retrieving evidence ({n_claims} claim(s))")
+        librarian_skip_reason = "Librarian evidence retrieval was intentionally skipped for this run."
+        evidence = None
+        if skip_librarian:
+            evidence = _skipped_librarian_evidence(formalized, librarian_skip_reason)
+            yield ev.librarian_skipped(librarian_skip_reason)
+        else:
+            lib_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="librarian")
+            lib_future = lib_executor.submit(
+                retrieve_evidence,
+                formalized,
+                max_papers_per_claim=max_papers,
+                on_event=lib_events.append,
+            )
+            yield ev.stage_started("librarian", f"Retrieving evidence ({n_claims} claim(s))")
 
         # ── v6 Analyst stage: expand → fetch → methodologist → compute → interpret ──
         if _cancelled():
@@ -271,10 +316,11 @@ def run_pipeline(
                 yield ev.analyst_failed(str(exc))
                 analyst_result = None
 
-        evidence = lib_future.result()
-        for e in lib_events:
-            yield e
-        yield ev.token_update(TRACKER)
+        if lib_future is not None:
+            evidence = lib_future.result()
+            for e in lib_events:
+                yield e
+            yield ev.token_update(TRACKER)
         yield ev.stage_completed("librarian")
 
         # ── Skeptic ──────────────────────────────────────────────────────────

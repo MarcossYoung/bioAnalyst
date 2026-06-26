@@ -1,5 +1,7 @@
 """Smoke tests for agent/data handoff guards."""
 
+import json
+
 import pytest
 
 from nullifier.agents import analyst, formalizer, interpreter, librarian, methodologist, skeptic
@@ -157,6 +159,37 @@ def test_methodologist_routes_paml_constructs_deterministically(construct, test)
 def test_llm_json_parser_accepts_wrapped_json():
     assert _loads_json_response('Here is the JSON:\n{"ok": true}\nDone.') == {"ok": True}
     assert _loads_json_response('```json\n{"ok": true}\n```') == {"ok": True}
+
+
+def test_llm_json_parser_prefers_expected_contract_over_earlier_json():
+    text = (
+        'Example input shape: {"core_hypothesis": "not the answer"}\n'
+        'Actual answer: {"atomic_claims": [{"statement": "A", "null_hypothesis": "not A"}], '
+        '"key_search_terms": []}'
+    )
+
+    out = _loads_json_response(text, expected_keys=("atomic_claims",))
+
+    assert "atomic_claims" in out
+    assert "core_hypothesis" not in out
+
+
+def test_llm_json_parser_rejects_wrong_shape_when_expected_keys_are_required():
+    with pytest.raises(json.JSONDecodeError):
+        _loads_json_response(
+            '{"core_hypothesis": "stage one repeated by mistake"}',
+            expected_keys=("atomic_claims",),
+        )
+
+
+def test_llm_json_parser_accepts_bare_array_when_allowed():
+    out = _loads_json_response(
+        'Claims:\n[{"statement": "A", "null_hypothesis": "not A"}]',
+        expected_keys=("atomic_claims",),
+        allow_bare_array=True,
+    )
+
+    assert out == [{"statement": "A", "null_hypothesis": "not A"}]
 
 
 def test_librarian_preserves_paper_alignment_when_batch_is_short(monkeypatch):

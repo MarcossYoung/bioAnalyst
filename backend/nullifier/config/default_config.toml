@@ -82,7 +82,7 @@ run_branch_site_model = true
 timeout_seconds = 300
 
 [literature]
-max_papers_per_claim = 12
+max_papers_per_claim = 4
 max_per_source = 3
 parallel_search = true
 per_claim_search_budget_seconds = 30

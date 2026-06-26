@@ -228,6 +228,7 @@ def formalize_stage1(raw_text: str) -> dict:
         FORMALIZER_STAGE1_SPEC.render_system_prompt(),
         task.render(),
         max_tokens=6000,
+        expected_keys=("core_hypothesis",),
     ))
 
 
@@ -253,6 +254,8 @@ def formalize_stage2(stage1: dict) -> dict:
         FORMALIZER_STAGE2_SPEC.render_system_prompt(),
         task.render(),
         max_tokens=4000,
+        expected_keys=("atomic_claims", "claims", "atomicClaims", "predictions"),
+        allow_bare_array=True,
     ))
 
 

@@ -81,7 +81,8 @@ _STATIC = Path(__file__).parent / "static"
 
 class CreateRunRequest(BaseModel):
     raw_input: str
-    max_papers: int = 12
+    max_papers: int = 4
+    skip_librarian: bool = False
 
 
 @app.post("/api/runs", status_code=201)
@@ -89,7 +90,7 @@ async def create_run(req: CreateRunRequest):
     if len(req.raw_input.strip()) < 50:
         raise HTTPException(status_code=422, detail="raw_input too short (min 50 chars)")
     run_id = db.create_run(req.raw_input, req.max_papers)
-    asyncio.create_task(_execute_run(run_id, req.raw_input, req.max_papers))
+    asyncio.create_task(_execute_run(run_id, req.raw_input, req.max_papers, req.skip_librarian))
     return {"run_id": run_id}
 
 
@@ -308,7 +309,7 @@ def _handle_ws_message(run_id: str, msg: dict) -> None:
 
 # ── Pipeline execution ───────────────────────────────────────────────────────
 
-async def _execute_run(run_id: str, raw_input: str, max_papers: int) -> None:
+async def _execute_run(run_id: str, raw_input: str, max_papers: int, skip_librarian: bool = False) -> None:
     """Async task: drives the sync pipeline, persists events, fans out to WS clients."""
     handle = RunHandle()
     _active[run_id] = handle
@@ -324,6 +325,7 @@ async def _execute_run(run_id: str, raw_input: str, max_papers: int) -> None:
                 confirm_callback=handle.build_confirm_callback(),
                 max_papers=max_papers,
                 cancel_check=handle.cancel_flag.is_set,
+                skip_librarian=skip_librarian,
             ):
                 handle.sync_queue.put(event)
                 if event.type == "run_completed":

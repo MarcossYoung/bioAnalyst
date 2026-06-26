@@ -110,19 +110,61 @@ def _strip_json_fences(text: str) -> str:
     return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
 
 
-def _loads_json_response(text: str):
-    """Parse a JSON response, tolerating harmless prose around one JSON value."""
+def _has_expected_key(value, expected_keys: tuple[str, ...] | None) -> bool:
+    if not expected_keys:
+        return True
+    if not isinstance(value, dict):
+        return False
+    return any(key in value for key in expected_keys)
+
+
+def _shape_error(cleaned: str, expected_keys: tuple[str, ...] | None) -> json.JSONDecodeError:
+    expected = ", ".join(expected_keys or ())
+    message = f"JSON response did not contain expected top-level keys: {expected}"
+    return json.JSONDecodeError(message, cleaned, 0)
+
+
+def _loads_json_response(
+    text: str,
+    expected_keys: tuple[str, ...] | list[str] | set[str] | None = None,
+    allow_bare_array: bool = False,
+):
+    """Parse a JSON response, tolerating harmless prose around one JSON value.
+
+    When expected_keys are supplied, prefer a JSON object matching that contract
+    instead of the first JSON-looking object in the text. This prevents examples,
+    echoed input, or stage-1-shaped objects from being accepted as the answer.
+    """
     cleaned = _strip_json_fences(text)
     decoder = json.JSONDecoder()
+    expected = tuple(expected_keys or ())
     try:
-        return json.loads(cleaned)
+        value = json.loads(cleaned)
+        if _has_expected_key(value, expected) or (allow_bare_array and isinstance(value, list)):
+            return value
+        if expected:
+            raise _shape_error(cleaned, expected)
+        return value
     except json.JSONDecodeError as original_error:
+        candidates = []
         for start in (i for i, ch in enumerate(cleaned) if ch in "{["):
             try:
                 value, _ = decoder.raw_decode(cleaned[start:])
-                return value
+                candidates.append(value)
             except json.JSONDecodeError:
                 continue
+        if expected:
+            for value in candidates:
+                if _has_expected_key(value, expected):
+                    return value
+            if allow_bare_array:
+                for value in candidates:
+                    if isinstance(value, list):
+                        return value
+            if candidates:
+                raise _shape_error(cleaned, expected)
+        if candidates:
+            return candidates[0]
         raise original_error
 
 
@@ -175,7 +217,20 @@ def _sleep_for_transient(exc, retry: int, label: str, status: int | None = None)
     time.sleep(wait)
 
 
-def _call_claude_json(system: str, user: str, max_tokens: int) -> dict:
+def _json_retry_hint(expected_keys: tuple[str, ...] | None) -> str:
+    hint = "IMPORTANT: Respond with ONLY valid JSON. No preamble, no markdown fences."
+    if expected_keys:
+        hint += f" The top-level object must include one of these keys: {', '.join(expected_keys)}."
+    return hint
+
+
+def _call_claude_json(
+    system: str,
+    user: str,
+    max_tokens: int,
+    expected_keys: tuple[str, ...] | None = None,
+    allow_bare_array: bool = False,
+) -> dict:
     cfg = _get_config()
     model = cfg["backends"]["claude"]["model"]
     client = _get_anthropic()
@@ -190,10 +245,14 @@ def _call_claude_json(system: str, user: str, max_tokens: int) -> dict:
                 TRACKER.add_claude(resp.usage)
                 text = _anthropic_text(resp)
                 try:
-                    return _loads_json_response(text)
+                    return _loads_json_response(
+                        text,
+                        expected_keys=expected_keys,
+                        allow_bare_array=allow_bare_array,
+                    )
                 except json.JSONDecodeError:
                     if attempt == 0:
-                        user = user + "\n\nIMPORTANT: Respond with ONLY valid JSON. No preamble, no markdown fences."
+                        user = user + "\n\n" + _json_retry_hint(expected_keys)
                     else:
                         raise ValueError(f"Claude failed JSON parse after retry. Raw:\n{text}")
         except (AnthropicRateLimitError, AnthropicAPIConnectionError) as e:
@@ -209,7 +268,13 @@ def _call_claude_json(system: str, user: str, max_tokens: int) -> dict:
     raise last_exc or RuntimeError("Claude call failed after rate-limit retries")
 
 
-def _call_local_json(system: str, user: str, max_tokens: int) -> dict:
+def _call_local_json(
+    system: str,
+    user: str,
+    max_tokens: int,
+    expected_keys: tuple[str, ...] | None = None,
+    allow_bare_array: bool = False,
+) -> dict:
     cfg = _get_config()
     model = cfg["backends"]["local"]["model"]
     client = _get_local()
@@ -233,10 +298,14 @@ def _call_local_json(system: str, user: str, max_tokens: int) -> dict:
                     TRACKER.add_local(resp.usage.prompt_tokens, resp.usage.completion_tokens)
                 text = _openai_text(resp)
                 try:
-                    return _loads_json_response(text)
+                    return _loads_json_response(
+                        text,
+                        expected_keys=expected_keys,
+                        allow_bare_array=allow_bare_array,
+                    )
                 except json.JSONDecodeError:
                     if attempt == 0:
-                        user = user + "\n\nIMPORTANT: Respond with ONLY valid JSON. No preamble, no markdown fences."
+                        user = user + "\n\n" + _json_retry_hint(expected_keys)
                     else:
                         raise ValueError(f"Local model failed JSON parse after retry. Raw:\n{text}")
         except (OpenAIRateLimitError, OpenAIAPIConnectionError) as e:
@@ -252,14 +321,34 @@ def _call_local_json(system: str, user: str, max_tokens: int) -> dict:
     raise last_exc or RuntimeError("Local call failed after rate-limit retries")
 
 
-def llm_call_json(task_name: str, system: str, user: str, max_tokens: int = 2000) -> dict:
+def llm_call_json(
+    task_name: str,
+    system: str,
+    user: str,
+    max_tokens: int = 2000,
+    expected_keys: tuple[str, ...] | list[str] | set[str] | None = None,
+    allow_bare_array: bool = False,
+) -> dict:
     """Routes a JSON-output call to the configured backend for this task."""
     cfg = _get_config()
     backend = cfg["routing"].get(task_name, "claude")
+    expected = tuple(expected_keys or ())
     if backend == "local":
-        return _call_local_json(system, user, max_tokens)
+        return _call_local_json(
+            system,
+            user,
+            max_tokens,
+            expected_keys=expected,
+            allow_bare_array=allow_bare_array,
+        )
     else:
-        return _call_claude_json(system, user, max_tokens)
+        return _call_claude_json(
+            system,
+            user,
+            max_tokens,
+            expected_keys=expected,
+            allow_bare_array=allow_bare_array,
+        )
 
 
 def llm_call_json_batch(task_name: str, items: list[tuple[str, str, int]]) -> list[dict]:

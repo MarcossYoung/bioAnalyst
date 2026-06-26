@@ -147,6 +147,10 @@ def synthesis_ready(claim_id: str, evidence_strength: str, novelty_flag: str) ->
     })
 
 
+def librarian_skipped(reason: str) -> Event:
+    return Event("librarian_skipped", {"reason": reason})
+
+
 def classifier_degraded(claim_id: str, summary: dict) -> Event:
     return Event("classifier_degraded", {
         "claim_id": claim_id,
